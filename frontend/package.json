@@ -1,0 +1,20 @@
+{
+  "name": "astroclips-frontend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node dist/server.js",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "hono": "^4.12.18",
+    "@hono/node-server": "^1.14.0",
+    "postgres": "^3.4.5",
+    "drizzle-orm": "^0.45.1",
+    "jose": "^6.2.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.3",
+    "@types/node": "^22.0.0"
+  }
+}
