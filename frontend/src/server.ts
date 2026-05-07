@@ -195,26 +195,35 @@ app.post("/api/setup", async (c) => {
 app.all("/api/processor/*", requireAuth, async (c) => {
   if (!PROCESSOR_URL) return c.json({ error: "Processor not configured" }, 503);
 
-  const path = c.req.path.replace("/api/processor", "");
-  const url = `${PROCESSOR_URL}${path}`;
+  const proxyPath = c.req.path.replace("/api/processor", "");
+  const url = `${PROCESSOR_URL}${proxyPath}`;
+
+  const contentType = c.req.header("Content-Type") || "";
+
+  // Forward all headers except host
+  const forwardHeaders: Record<string, string> = {};
+  if (contentType) forwardHeaders["Content-Type"] = contentType;
 
   const init: RequestInit = {
     method: c.req.method,
-    headers: { "Content-Type": c.req.header("Content-Type") || "application/json" },
+    headers: forwardHeaders,
   };
 
   if (c.req.method !== "GET" && c.req.method !== "HEAD") {
-    init.body = c.req.raw.body;
-    (init as any).duplex = "half";
+    // Buffer the body to avoid stream issues
+    const bodyBuffer = await c.req.arrayBuffer();
+    if (bodyBuffer.byteLength > 0) {
+      init.body = bodyBuffer;
+    }
   }
 
   try {
     const resp = await fetch(url, init);
-    const contentType = resp.headers.get("content-type") || "application/json";
+    const respContentType = resp.headers.get("content-type") || "application/json";
     const body = await resp.arrayBuffer();
     return new Response(body, {
       status: resp.status,
-      headers: { "Content-Type": contentType },
+      headers: { "Content-Type": respContentType },
     });
   } catch (e: any) {
     return c.json({ error: `Processor error: ${e.message}` }, 502);
