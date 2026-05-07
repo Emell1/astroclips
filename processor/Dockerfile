@@ -1,14 +1,20 @@
-FROM jrottenberg/ffmpeg:4.4-ubuntu2004 AS ffmpeg
-FROM python:3.11-slim
+FROM ubuntu:20.04
 
-# Copy ffmpeg from dedicated image
-COPY --from=ffmpeg /usr/local /usr/local
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Minimal system deps
 RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3-pip \
+    python3.11-dev \
+    ffmpeg \
     libgl1 \
     libglib2.0-0 \
+    libssl1.1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Make python3.11 the default python3
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
+RUN python3 -m pip install --upgrade pip
 
 WORKDIR /app
 
