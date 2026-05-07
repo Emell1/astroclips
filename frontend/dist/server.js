@@ -193,8 +193,23 @@ app.all("/api/processor/*", requireAuth, async (c) => {
 });
 app.get("/api/ping", (c) => c.json({ ok: true, ts: Date.now() }));
 // ── Serve React SPA ────────────────────────────────────────────────────────
-app.use("/*", serveStatic({ root: "./public" }));
-app.get("/*", serveStatic({ path: "./public/index.html" }));
+// Static assets first (JS, CSS, images)
+app.use("/assets/*", serveStatic({ root: "./public" }));
+app.use("/favicon.ico", serveStatic({ root: "./public" }));
+app.use("/logo.svg", serveStatic({ root: "./public" }));
+app.use("/og-image.png", serveStatic({ root: "./public" }));
+// SPA fallback — all other routes return index.html
+app.get("/*", async (c) => {
+    const { readFileSync } = await import("fs");
+    const { join } = await import("path");
+    try {
+        const html = readFileSync(join(process.cwd(), "public", "index.html"), "utf-8");
+        return c.html(html);
+    }
+    catch {
+        return c.text("Not found", 404);
+    }
+});
 // ── Start ──────────────────────────────────────────────────────────────────
 runMigrations().then(() => {
     serve({ fetch: app.fetch, port: PORT }, () => {
