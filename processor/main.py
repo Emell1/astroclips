@@ -351,7 +351,7 @@ def render_clip(video_path: str, start: float, duration: float,
                    "-i", str(vp),
                    "-filter_complex", filter_complex, "-map", "[face]", "-map", "0:a"]
 
-    cmd += ["-c:v", "libx264", "-crf", "20", "-preset", "fast",
+    cmd += ["-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
             "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(output_path)]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
@@ -466,7 +466,7 @@ async def render_clip_endpoint(config: RenderConfig):
     if not success:
         raise HTTPException(500, "Error al renderizar el clip")
 
-    return {"url": f"/outputs/{out_name}", "filename": out_name}
+    return {"url": f"/api/download/{out_name}", "filename": out_name}
 
 
 @app.get("/api/download/{filename}")
@@ -475,6 +475,22 @@ async def download_file(filename: str):
     if not p.exists():
         raise HTTPException(404, "File not found")
     return FileResponse(str(p), media_type="video/mp4", filename=filename)
+
+
+@app.get("/api/frame/{job_id}")
+async def get_frame(job_id: str, t: float = 0):
+    job = load_job(job_id)
+    video_path = Path(job["video_path"])
+    frame_path = OUTPUTS_DIR / f"{job_id}_frame.jpg"
+    if not frame_path.exists():
+        subprocess.run([
+            "ffmpeg", "-y", "-ss", str(t), "-i", str(video_path),
+            "-vframes", "1", "-q:v", "3", "-vf", "scale=1280:-1",
+            str(frame_path)
+        ], capture_output=True)
+    if not frame_path.exists():
+        raise HTTPException(404, "Frame not found")
+    return FileResponse(str(frame_path), media_type="image/jpeg")
 
 
 @app.get("/api/health")
