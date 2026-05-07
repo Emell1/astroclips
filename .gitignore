@@ -1,6 +1,8 @@
 node_modules/
 .wrangler/
 dist/
+!dist/client/
+!frontend/dist/
 .env
 processor/uploads/
 processor/outputs/
