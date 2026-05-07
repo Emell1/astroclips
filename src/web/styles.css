@@ -1,0 +1,39 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-bg:        #0a0a0f;
+  --color-surface:   #12121a;
+  --color-elevated:  #1a1a26;
+  --color-border:    #2a2a3a;
+  --color-primary:   #7c3aed;
+  --color-primary-h: #6d28d9;
+  --color-accent:    #f59e0b;
+  --color-success:   #10b981;
+  --color-danger:    #ef4444;
+  --color-text:      #f0f0f5;
+  --color-muted:     #8888a0;
+  --color-subtle:    #55556a;
+
+  --font-display: 'Syne', sans-serif;
+  --font-body:    'DM Sans', sans-serif;
+  --font-mono:    'JetBrains Mono', monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  background: #0a0a0f;
+  color: #f0f0f5;
+  font-family: 'DM Sans', sans-serif;
+  margin: 0;
+  min-height: 100vh;
+}
+
+h1, h2, h3, h4 {
+  font-family: 'Syne', sans-serif;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', monospace;
+}

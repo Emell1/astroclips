@@ -1,0 +1,12 @@
+node_modules/
+.wrangler/
+dist/
+.env
+processor/uploads/
+processor/outputs/
+processor/jobs/
+*.wav
+*.part
+__pycache__/
+*.pyc
+.DS_Store
