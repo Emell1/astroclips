@@ -1,6 +1,8 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import { useLocation, useParams } from "wouter"
 import { processorFetch } from "../lib/auth"
+
+// ── Types ────────────────────────────────────────────────────────────────
 
 interface Clip {
   id: number; start: number; end: number
@@ -8,124 +10,156 @@ interface Clip {
   visual: { has_face: boolean; has_diagram: boolean; face_x: number; face_y: number; face_w: number; face_h: number; orig_w: number; orig_h: number }
 }
 
-interface Rect { x: number; y: number; w: number; h: number }
+// Layer: position/size in 0..1 coords relative to the 9:16 canvas
+interface Layer {
+  id: string
+  visible: boolean
+  // source crop in original video pixels
+  srcX: number; srcY: number; srcW: number; srcH: number
+  // dest on canvas in 0..1 units
+  x: number; y: number; w: number; h: number
+}
 
-function CropOverlay({
-  imgW, imgH, origW, origH, rect, color, label,
-  onChange
-}: {
-  imgW: number; imgH: number; origW: number; origH: number
-  rect: Rect; color: string; label: string
-  onChange: (r: Rect) => void
-}) {
-  const scaleX = imgW / origW
-  const scaleY = imgH / origH
-  const px = rect.x * scaleX, py = rect.y * scaleY
-  const pw = rect.w * scaleX, ph = rect.h * scaleY
+// ── Canvas constants ─────────────────────────────────────────────────────
+const CANVAS_W = 1080
+const CANVAS_H = 1920
 
-  const dragRef = useRef<{ type: string; startX: number; startY: number; origRect: Rect } | null>(null)
+// ── Drag logic ───────────────────────────────────────────────────────────
+type DragHandle = "move" | "tl" | "tr" | "bl" | "br"
 
-  const getXY = (e: React.MouseEvent | React.TouchEvent) => {
-    const el = (e.currentTarget as HTMLElement).closest(".crop-container") as HTMLElement
-    const bounds = el.getBoundingClientRect()
-    const cx = "touches" in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX
-    const cy = "touches" in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY
-    return { x: cx - bounds.left, y: cy - bounds.top }
-  }
+function useLayerDrag(
+  canvasRef: React.RefObject<HTMLDivElement | null>,
+  layers: Record<string, Layer>,
+  setLayers: React.Dispatch<React.SetStateAction<Record<string, Layer>>>,
+  displayW: number,
+  displayH: number,
+) {
+  const dragging = useRef<{ id: string; handle: DragHandle; startX: number; startY: number; origLayer: Layer } | null>(null)
 
-  const start = (e: React.MouseEvent | React.TouchEvent, type: string) => {
+  const startDrag = useCallback((e: React.MouseEvent | React.TouchEvent, id: string, handle: DragHandle) => {
     e.preventDefault(); e.stopPropagation()
-    const { x, y } = getXY(e)
-    dragRef.current = { type, startX: x, startY: y, origRect: { ...rect } }
+    const pt = "touches" in e ? e.touches[0] : e
+    dragging.current = { id, handle, startX: pt.clientX, startY: pt.clientY, origLayer: { ...layers[id] } }
 
-    const move = (ev: MouseEvent | TouchEvent) => {
-      if (!dragRef.current) return
-      const clientX = "touches" in ev ? (ev as TouchEvent).touches[0].clientX : (ev as MouseEvent).clientX
-      const clientY = "touches" in ev ? (ev as TouchEvent).touches[0].clientY : (ev as MouseEvent).clientY
-      const el2 = document.querySelector(".crop-container") as HTMLElement
-      const bounds2 = el2?.getBoundingClientRect()
-      if (!bounds2) return
-      const cx2 = clientX - bounds2.left, cy2 = clientY - bounds2.top
-      const dx = (cx2 - dragRef.current.startX) / scaleX
-      const dy = (cy2 - dragRef.current.startY) / scaleY
-      const o = dragRef.current.origRect
-      let { x: nx, y: ny, w: nw, h: nh } = o
-      const t = dragRef.current.type
-      if (t === "move") {
-        nx = Math.max(0, Math.min(origW - nw, o.x + dx))
-        ny = Math.max(0, Math.min(origH - nh, o.y + dy))
-      } else {
-        if (t.includes("l")) { nx = Math.max(0, o.x + dx); nw = Math.max(60, o.w - dx) }
-        if (t.includes("r")) { nw = Math.max(60, Math.min(origW - nx, o.w + dx)) }
-        if (t.includes("t")) { ny = Math.max(0, o.y + dy); nh = Math.max(60, o.h - dy) }
-        if (t.includes("b")) { nh = Math.max(60, Math.min(origH - ny, o.h + dy)) }
-      }
-      onChange({ x: Math.round(nx), y: Math.round(ny), w: Math.round(nw), h: Math.round(nh) })
-    }
-    const up = () => {
-      dragRef.current = null
-      window.removeEventListener("mousemove", move)
-      window.removeEventListener("mouseup", up)
-      window.removeEventListener("touchmove", move)
-      window.removeEventListener("touchend", up)
-    }
-    window.addEventListener("mousemove", move)
-    window.addEventListener("mouseup", up)
-    window.addEventListener("touchmove", move, { passive: false })
-    window.addEventListener("touchend", up)
-  }
+    const onMove = (ev: MouseEvent | TouchEvent) => {
+      if (!dragging.current) return
+      const { id, handle, startX, startY, origLayer: o } = dragging.current
+      const pt2 = "touches" in ev ? (ev as TouchEvent).touches[0] : ev as MouseEvent
+      const dx = (pt2.clientX - startX) / displayW
+      const dy = (pt2.clientY - startY) / displayH
 
-  const HS = 22 // handle size for touch
-  const handles = [
-    { t: "tl", x: px - HS/2, y: py - HS/2 },
-    { t: "tr", x: px + pw - HS/2, y: py - HS/2 },
-    { t: "bl", x: px - HS/2, y: py + ph - HS/2 },
-    { t: "br", x: px + pw - HS/2, y: py + ph - HS/2 },
+      setLayers(prev => {
+        const l = { ...prev[id] }
+        if (handle === "move") {
+          l.x = Math.max(0, Math.min(1 - l.w, o.x + dx))
+          l.y = Math.max(0, Math.min(1 - l.h, o.y + dy))
+        } else {
+          let { x, y, w, h } = o
+          const minSize = 0.05
+          if (handle.includes("l")) { const nx = Math.min(o.x + o.w - minSize, o.x + dx); l.x = Math.max(0, nx); l.w = o.w - (l.x - o.x) }
+          if (handle.includes("r")) { l.w = Math.max(minSize, Math.min(1 - o.x, o.w + dx)) }
+          if (handle.includes("t")) { const ny = Math.min(o.y + o.h - minSize, o.y + dy); l.y = Math.max(0, ny); l.h = o.h - (l.y - o.y) }
+          if (handle.includes("b")) { l.h = Math.max(minSize, Math.min(1 - o.y, o.h + dy)) }
+          void x; void y; void w; void h
+        }
+        return { ...prev, [id]: l }
+      })
+    }
+
+    const onUp = () => {
+      dragging.current = null
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+      window.removeEventListener("touchmove", onMove)
+      window.removeEventListener("touchend", onUp)
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+    window.addEventListener("touchmove", onMove, { passive: false })
+    window.addEventListener("touchend", onUp)
+  }, [layers, displayW, displayH, setLayers])
+
+  return { startDrag }
+}
+
+// ── Layer element ────────────────────────────────────────────────────────
+
+function LayerBox({
+  layer, frameUrl, color, label, displayW, displayH,
+  onDragStart, origW, origH
+}: {
+  layer: Layer; frameUrl: string; color: string; label: string
+  displayW: number; displayH: number
+  onDragStart: (e: React.MouseEvent | React.TouchEvent, handle: DragHandle) => void
+  origW: number; origH: number
+}) {
+  if (!layer.visible) return null
+
+  const px = layer.x * displayW
+  const py = layer.y * displayH
+  const pw = layer.w * displayW
+  const ph = layer.h * displayH
+  const HS = 20
+
+  // Crop the source frame into the box using background-image
+  const scaleX = displayW / origW  // display px per orig px... no: frame is shown at displayW wide
+  const cropL = (layer.srcX / origW) * 100
+  const cropT = (layer.srcY / origH) * 100
+  const bgSizeW = (origW / layer.srcW) * 100
+  const bgSizeH = (origH / layer.srcH) * 100
+
+  const handles: { h: DragHandle; cx: number; cy: number }[] = [
+    { h: "tl", cx: px, cy: py },
+    { h: "tr", cx: px + pw, cy: py },
+    { h: "bl", cx: px, cy: py + ph },
+    { h: "br", cx: px + pw, cy: py + ph },
   ]
+
+  void scaleX; void cropL; void cropT
 
   return (
     <>
-      {/* dim outside */}
-      <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.55)", pointerEvents:"none" }} />
-      {/* clear window */}
-      <div style={{
-        position:"absolute", left:px, top:py, width:pw, height:ph,
-        boxShadow:`0 0 0 9999px rgba(0,0,0,0.55)`,
-        border:`2px solid ${color}`, boxSizing:"border-box",
-        cursor:"move", touchAction:"none"
-      }}
-        onMouseDown={e => start(e, "move")}
-        onTouchStart={e => start(e, "move")}
-      >
-        {/* label */}
-        <span style={{
-          position:"absolute", top:4, left:6, fontSize:11, fontWeight:700,
-          color:color, background:"rgba(0,0,0,0.6)", padding:"2px 6px", borderRadius:4,
-          pointerEvents:"none"
-        }}>{label}</span>
-        {/* crosshair center */}
-        <div style={{
-          position:"absolute", top:"50%", left:"50%", transform:"translate(-50%,-50%)",
-          width:20, height:20, pointerEvents:"none"
-        }}>
-          <div style={{ position:"absolute", top:"50%", left:0, right:0, height:1, background:color, opacity:0.5 }} />
-          <div style={{ position:"absolute", left:"50%", top:0, bottom:0, width:1, background:color, opacity:0.5 }} />
-        </div>
-      </div>
-      {/* corner handles */}
-      {handles.map(({ t, x, y }) => (
-        <div key={t} style={{
-          position:"absolute", left:x, top:y, width:HS, height:HS,
-          background:color, borderRadius:4, cursor:"pointer", touchAction:"none",
-          zIndex:10, border:"2px solid #000"
+      {/* Layer box */}
+      <div
+        style={{
+          position: "absolute", left: px, top: py, width: pw, height: ph,
+          border: `2px solid ${color}`,
+          boxSizing: "border-box", cursor: "move", overflow: "hidden",
+          touchAction: "none", userSelect: "none",
+          backgroundImage: frameUrl ? `url(${frameUrl})` : undefined,
+          backgroundSize: `${bgSizeW}% ${bgSizeH}%`,
+          backgroundPosition: `-${(layer.srcX / layer.srcW) * pw}px -${(layer.srcY / layer.srcH) * ph}px`,
+          backgroundRepeat: "no-repeat",
+          backgroundColor: "#1a1a26",
         }}
-          onMouseDown={e => start(e, t)}
-          onTouchStart={e => start(e, t)}
+        onMouseDown={e => onDragStart(e, "move")}
+        onTouchStart={e => onDragStart(e, "move")}
+      >
+        <span style={{
+          position: "absolute", top: 4, left: 4, fontSize: 10, fontWeight: 700,
+          color, background: "rgba(0,0,0,0.7)", padding: "2px 6px", borderRadius: 4,
+          pointerEvents: "none"
+        }}>{label}</span>
+      </div>
+      {/* Corner handles */}
+      {handles.map(({ h, cx, cy }) => (
+        <div key={h} style={{
+          position: "absolute",
+          left: cx - HS / 2, top: cy - HS / 2,
+          width: HS, height: HS,
+          background: color, border: "2px solid #000", borderRadius: 4,
+          cursor: h === "tl" || h === "br" ? "nwse-resize" : "nesw-resize",
+          touchAction: "none", zIndex: 10
+        }}
+          onMouseDown={e => onDragStart(e, h)}
+          onTouchStart={e => onDragStart(e, h)}
         />
       ))}
     </>
   )
 }
+
+// ── Main page ────────────────────────────────────────────────────────────
 
 export default function ClipEditorPage() {
   const { id, index } = useParams()
@@ -134,67 +168,94 @@ export default function ClipEditorPage() {
   const [rendering, setRendering] = useState(false)
   const [downloadUrl, setDownloadUrl] = useState("")
   const [error, setError] = useState("")
-  const [frameLoaded, setFrameLoaded] = useState(false)
-  const imgRef = useRef<HTMLImageElement>(null)
-  const [imgSize, setImgSize] = useState({ w: 0, h: 0 })
-
-  const [layout, setLayout] = useState<"face_only" | "split">("face_only")
-  const [face, setFace] = useState<Rect>({ x: 0, y: 0, w: 400, h: 400 })
-  const [diag, setDiag] = useState<Rect>({ x: 0, y: 0, w: 800, h: 600 })
-  const [showLogo, setShowLogo] = useState(true)
-  const [logoSize, setLogoSize] = useState(130)
-  const [logoOpacity, setLogoOpacity] = useState(0.6)
-  const [logoX, setLogoX] = useState<"right" | "left">("right")
-  const [logoY, setLogoY] = useState<"top" | "bottom">("top")
+  const [frameUrl, setFrameUrl] = useState("")
+  const canvasRef = useRef<HTMLDivElement>(null)
+  const [displayW, setDisplayW] = useState(320)
+  const displayH = displayW * (CANVAS_H / CANVAS_W) // 9:16
 
   const origW = clip?.visual?.orig_w || 1920
   const origH = clip?.visual?.orig_h || 1080
 
+  const [layers, setLayers] = useState<Record<string, Layer>>({
+    face: { id: "face", visible: true, srcX: 0, srcY: 0, srcW: 500, srcH: 500, x: 0, y: 0, w: 1, h: 0.5 },
+    diag: { id: "diag", visible: false, srcX: 0, srcY: 0, srcW: 1440, srcH: 1080, x: 0, y: 0.5, w: 1, h: 0.5 },
+    logo: { id: "logo", visible: true, srcX: 0, srcY: 0, srcW: 0, srcH: 0, x: 0.7, y: 0.02, w: 0.25, h: 0.07 },
+  })
+  const [logoOpacity, setLogoOpacity] = useState(0.8)
+  const [activeLayer, setActiveLayer] = useState<string | null>(null)
+
+  const { startDrag } = useLayerDrag(canvasRef, layers, setLayers, displayW, displayH)
+
+  // Measure canvas width
+  useEffect(() => {
+    const update = () => {
+      if (canvasRef.current) setDisplayW(canvasRef.current.offsetWidth)
+    }
+    update()
+    window.addEventListener("resize", update)
+    return () => window.removeEventListener("resize", update)
+  }, [])
+
+  // Load job
   useEffect(() => {
     processorFetch(`/api/job/${id}`).then(r => r.json()).then(job => {
       const c: Clip = job.clips[Number(index)]
       setClip(c)
+      const t = Math.round(c.start + (c.end - c.start) / 2)
+      setFrameUrl(`/api/processor/api/frame/${id}?t=${t}`)
       if (c?.visual) {
         const v = c.visual
         const pad = 80
-        setFace({
-          x: Math.max(0, Math.round(v.face_x - v.face_w / 2 - pad)),
-          y: Math.max(0, Math.round(v.face_y - v.face_h / 2 - pad)),
-          w: Math.min(v.orig_w, Math.round(v.face_w + pad * 2)),
-          h: Math.min(v.orig_h, Math.round(v.face_h + pad * 2)),
-        })
-        setDiag({ x: 0, y: 0, w: Math.round(v.orig_w * 0.75), h: v.orig_h })
-        if (v.has_diagram) setLayout("split")
+        const fx = Math.max(0, v.face_x - v.face_w / 2 - pad)
+        const fy = Math.max(0, v.face_y - v.face_h / 2 - pad)
+        const fw = Math.min(v.orig_w - fx, v.face_w + pad * 2)
+        const fh = Math.min(v.orig_h - fy, v.face_h + pad * 2)
+
+        setLayers(prev => ({
+          ...prev,
+          face: { ...prev.face, srcX: Math.round(fx), srcY: Math.round(fy), srcW: Math.round(fw), srcH: Math.round(fh), visible: true },
+          diag: { ...prev.diag, srcX: 0, srcY: 0, srcW: Math.round(v.orig_w * 0.75), srcH: v.orig_h, visible: v.has_diagram },
+        }))
       }
     })
   }, [id, index])
-
-  const frameUrl = clip ? `/api/processor/api/frame/${id}?t=${Math.round(clip.start + (clip.end - clip.start) / 2)}` : ""
-
-  const handleImgLoad = () => {
-    if (imgRef.current) {
-      setImgSize({ w: imgRef.current.offsetWidth, h: imgRef.current.offsetHeight })
-      setFrameLoaded(true)
-    }
-  }
 
   const handleRender = async () => {
     if (!clip) return
     setRendering(true); setError(""); setDownloadUrl("")
     try {
+      const face = layers.face
+      const diag = layers.diag
+      const logo = layers.logo
+
+      // Convert 0..1 canvas coords to ffmpeg filter params
+      const config = {
+        job_id: id,
+        clip_index: Number(index),
+        // Face layer
+        face_crop_x: face.srcX, face_crop_y: face.srcY, face_crop_w: face.srcW, face_crop_h: face.srcH,
+        face_dst_x: face.x, face_dst_y: face.y, face_dst_w: face.w, face_dst_h: face.h,
+        face_visible: face.visible,
+        // Diagram layer
+        diagram_crop_x: diag.srcX, diagram_crop_y: diag.srcY, diagram_crop_w: diag.srcW, diagram_crop_h: diag.srcH,
+        diagram_dst_x: diag.x, diagram_dst_y: diag.y, diagram_dst_w: diag.w, diagram_dst_h: diag.h,
+        diagram_visible: diag.visible,
+        // Logo layer
+        logo_dst_x: logo.x, logo_dst_y: logo.y, logo_dst_w: logo.w,
+        logo_visible: logo.visible,
+        logo_opacity: logoOpacity,
+        // Legacy compat
+        layout: diag.visible ? "split" : "face_only",
+        show_logo: logo.visible,
+        logo_size: Math.round(logo.w * CANVAS_W),
+        logo_x: logo.x > 0.5 ? "right" : "left",
+        logo_y: logo.y < 0.4 ? "top" : "bottom",
+      }
+
       const r = await processorFetch(`/api/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          job_id: id, clip_index: Number(index),
-          face_crop_x: face.x, face_crop_y: face.y, face_crop_w: face.w, face_crop_h: face.h,
-          diagram_crop_x: layout === "split" ? diag.x : null,
-          diagram_crop_y: layout === "split" ? diag.y : null,
-          diagram_crop_w: layout === "split" ? diag.w : null,
-          diagram_crop_h: layout === "split" ? diag.h : null,
-          layout, show_logo: showLogo,
-          logo_size: logoSize, logo_x: logoX, logo_y: logoY, logo_opacity: logoOpacity,
-        }),
+        body: JSON.stringify(config),
       })
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
@@ -212,11 +273,15 @@ export default function ClipEditorPage() {
     </div>
   )
 
-  const dur = Math.round(clip.end - clip.start)
+  const layerDefs = [
+    { id: "face", label: "👤 Cara", color: "#a855f7" },
+    { id: "diag", label: "🔮 Presentación", color: "#f59e0b" },
+    { id: "logo", label: "⭐ Logo", color: "#10b981" },
+  ]
 
   return (
     <div style={{ background: "#0a0a0f", minHeight: "100vh", padding: "12px" }}>
-      <div style={{ maxWidth: 600, margin: "0 auto" }}>
+      <div style={{ maxWidth: 480, margin: "0 auto" }}>
 
         {/* Header */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
@@ -225,156 +290,139 @@ export default function ClipEditorPage() {
             borderRadius: 8, padding: "8px 12px", cursor: "pointer", fontSize: 13
           }}>← Volver</button>
           <div>
-            <div style={{ color: "#f0f0f5", fontWeight: 700, fontSize: 15 }}>Clip #{Number(index) + 1}</div>
-            <div style={{ color: "#55556a", fontSize: 11 }}>{dur}s · Score {clip.score}</div>
+            <div style={{ color: "#f0f0f5", fontWeight: 700, fontSize: 15 }}>
+              Clip #{Number(index) + 1}
+            </div>
+            <div style={{ color: "#55556a", fontSize: 11 }}>
+              {Math.round(clip.end - clip.start)}s · Score {clip.score}
+            </div>
           </div>
         </div>
 
-        {/* Layout toggle */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          {[{ v: "face_only" as const, label: "🎭 Solo cara" }, { v: "split" as const, label: "⬛ Cara + Pres." }].map(opt => (
-            <button key={opt.v} onClick={() => setLayout(opt.v)} style={{
-              flex: 1, padding: "10px", borderRadius: 8, cursor: "pointer",
-              border: `1px solid ${layout === opt.v ? "#7c3aed" : "#2a2a3a"}`,
-              background: layout === opt.v ? "rgba(124,58,237,0.2)" : "#1a1a26",
-              color: layout === opt.v ? "#f0f0f5" : "#8888a0", fontSize: 13, fontWeight: 600
-            }}>{opt.label}</button>
+        {/* Layer toggles */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+          {layerDefs.map(({ id: lid, label, color }) => (
+            <button key={lid}
+              onClick={() => {
+                setLayers(p => ({ ...p, [lid]: { ...p[lid], visible: !p[lid].visible } }))
+                setActiveLayer(lid)
+              }}
+              style={{
+                padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13,
+                border: `2px solid ${layers[lid].visible ? color : "#2a2a3a"}`,
+                background: layers[lid].visible ? `${color}22` : "#1a1a26",
+                color: layers[lid].visible ? color : "#55556a", fontWeight: 600,
+              }}>{label}</button>
           ))}
         </div>
 
-        {/* Frame + crop editor */}
-        <div style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, overflow: "hidden", marginBottom: 12 }}>
+        {/* 9:16 Canvas */}
+        <div style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
           <div style={{ padding: "8px 12px", borderBottom: "1px solid #1a1a26" }}>
             <span style={{ color: "#55556a", fontSize: 11, fontFamily: "JetBrains Mono" }}>
-              ARRASTRA LAS ESQUINAS PARA RECORTAR
+              ARRASTRA Y REDIMENSIONA CADA CAPA · 9:16
             </span>
           </div>
-          <div className="crop-container" style={{ position: "relative", width: "100%", touchAction: "none" }}>
-            {/* Frame image */}
-            <img
-              ref={imgRef}
-              src={frameUrl}
-              alt="frame"
-              style={{ width: "100%", display: "block", opacity: frameLoaded ? 1 : 0 }}
-              onLoad={handleImgLoad}
-              onError={() => setFrameLoaded(false)}
-            />
-            {/* Placeholder if no frame */}
-            {!frameLoaded && (
-              <div style={{
-                width: "100%", paddingBottom: `${(origH / origW) * 100}%`,
-                background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center"
-              }}>
-                <span style={{ position: "absolute", color: "#55556a", fontSize: 13 }}>Cargando frame...</span>
-              </div>
+          <div
+            ref={canvasRef}
+            style={{
+              position: "relative",
+              width: "100%",
+              height: displayH,
+              background: "#000",
+              overflow: "hidden",
+              touchAction: "none",
+            }}
+            onClick={() => setActiveLayer(null)}
+          >
+            {/* Background frame */}
+            {frameUrl && (
+              <img src={frameUrl} alt="" style={{
+                position: "absolute", inset: 0, width: "100%", height: "100%",
+                objectFit: "cover", opacity: 0.15, pointerEvents: "none"
+              }} />
             )}
-            {/* Crop overlays — only when image is loaded */}
-            {frameLoaded && imgSize.w > 0 && (
-              <>
-                <CropOverlay
-                  imgW={imgSize.w} imgH={imgSize.h}
-                  origW={origW} origH={origH}
-                  rect={face} color="#a855f7" label="CARA"
-                  onChange={setFace}
-                />
-                {layout === "split" && (
-                  <CropOverlay
-                    imgW={imgSize.w} imgH={imgSize.h}
-                    origW={origW} origH={origH}
-                    rect={diag} color="#f59e0b" label="PRESENTACIÓN"
-                    onChange={setDiag}
-                  />
-                )}
-              </>
-            )}
-          </div>
-        </div>
 
-        {/* Output preview mockup — vertical 9:16 */}
-        <div style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, padding: 16, marginBottom: 12 }}>
-          <p style={{ color: "#55556a", fontSize: 11, fontFamily: "JetBrains Mono", margin: "0 0 12px" }}>RESULTADO (9:16)</p>
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <div style={{
-              width: 100, height: 178, background: "#000", borderRadius: 8,
-              border: "1px solid #2a2a3a", overflow: "hidden", position: "relative",
-              display: "flex", flexDirection: "column"
-            }}>
-              {layout === "face_only" ? (
-                <div style={{ flex: 1, background: "linear-gradient(135deg,#1a1a26,#12121a)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <span style={{ fontSize: 28 }}>👤</span>
-                </div>
-              ) : (
+            {/* Layers */}
+            {layerDefs.filter(l => l.id !== "logo").map(({ id: lid, label, color }) => (
+              <LayerBox
+                key={lid}
+                layer={layers[lid]}
+                frameUrl={lid !== "logo" ? frameUrl : ""}
+                color={color}
+                label={label}
+                displayW={displayW}
+                displayH={displayH}
+                origW={origW}
+                origH={origH}
+                onDragStart={(e, handle) => {
+                  setActiveLayer(lid)
+                  startDrag(e, lid, handle)
+                }}
+              />
+            ))}
+
+            {/* Logo layer — just colored box */}
+            {layers.logo.visible && (() => {
+              const l = layers.logo
+              const px = l.x * displayW, py = l.y * displayH
+              const pw = l.w * displayW, ph = l.h * displayH
+              const HS = 20
+              const handles: { h: DragHandle; cx: number; cy: number }[] = [
+                { h: "tl", cx: px, cy: py }, { h: "tr", cx: px + pw, cy: py },
+                { h: "bl", cx: px, cy: py + ph }, { h: "br", cx: px + pw, cy: py + ph },
+              ]
+              return (
                 <>
-                  <div style={{ height: "50%", background: "linear-gradient(135deg,#1a1a26,#12121a)", display: "flex", alignItems: "center", justifyContent: "center", borderBottom: "1px solid #2a2a3a" }}>
-                    <span style={{ fontSize: 20 }}>👤</span>
+                  <div style={{
+                    position: "absolute", left: px, top: py, width: pw, height: ph,
+                    border: "2px solid #10b981", background: "rgba(16,185,129,0.15)",
+                    cursor: "move", touchAction: "none", boxSizing: "border-box",
+                    display: "flex", alignItems: "center", justifyContent: "center"
+                  }}
+                    onMouseDown={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
+                    onTouchStart={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
+                  >
+                    <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, pointerEvents: "none" }}>LOGO</span>
                   </div>
-                  <div style={{ height: "50%", background: "#0a0a0f", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <span style={{ fontSize: 18 }}>🔮</span>
-                  </div>
+                  {handles.map(({ h, cx, cy }) => (
+                    <div key={h} style={{
+                      position: "absolute", left: cx - HS / 2, top: cy - HS / 2,
+                      width: HS, height: HS, background: "#10b981", border: "2px solid #000",
+                      borderRadius: 4, cursor: h === "tl" || h === "br" ? "nwse-resize" : "nesw-resize",
+                      touchAction: "none", zIndex: 10
+                    }}
+                      onMouseDown={e => { setActiveLayer("logo"); startDrag(e, "logo", h) }}
+                      onTouchStart={e => { setActiveLayer("logo"); startDrag(e, "logo", h) }}
+                    />
+                  ))}
                 </>
-              )}
-              {showLogo && (
-                <div style={{
-                  position: "absolute",
-                  top: logoY === "top" ? 5 : "auto", bottom: logoY === "bottom" ? 5 : "auto",
-                  left: logoX === "left" ? 5 : "auto", right: logoX === "right" ? 5 : "auto",
-                  fontSize: 7, color: "#8888a0", background: "rgba(0,0,0,0.6)",
-                  borderRadius: 3, padding: "2px 4px"
-                }}>LOGO</div>
-              )}
-            </div>
+              )
+            })()}
           </div>
         </div>
 
-        {/* Logo */}
-        <div style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, padding: 16, marginBottom: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-            <span style={{ color: "#f0f0f5", fontSize: 14, fontWeight: 600 }}>Logo</span>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-              <input type="checkbox" checked={showLogo} onChange={e => setShowLogo(e.target.checked)} style={{ accentColor: "#7c3aed", width: 18, height: 18 }} />
-              <span style={{ color: "#8888a0", fontSize: 13 }}>Mostrar</span>
-            </label>
+        {/* Logo opacity */}
+        {layers.logo.visible && (
+          <div style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, padding: 16, marginBottom: 12 }}>
+            <p style={{ color: "#55556a", fontSize: 11, margin: "0 0 8px", fontFamily: "JetBrains Mono" }}>
+              OPACIDAD LOGO: {Math.round(logoOpacity * 100)}%
+            </p>
+            <input type="range" min={10} max={100} value={Math.round(logoOpacity * 100)}
+              onChange={e => setLogoOpacity(Number(e.target.value) / 100)}
+              style={{ width: "100%", accentColor: "#10b981" }} />
           </div>
-          {showLogo && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div>
-                <p style={{ color: "#55556a", fontSize: 11, margin: "0 0 4px" }}>TAMAÑO: {logoSize}px</p>
-                <input type="range" min={60} max={300} value={logoSize} onChange={e => setLogoSize(Number(e.target.value))} style={{ width: "100%", accentColor: "#7c3aed" }} />
-              </div>
-              <div>
-                <p style={{ color: "#55556a", fontSize: 11, margin: "0 0 4px" }}>OPACIDAD: {Math.round(logoOpacity * 100)}%</p>
-                <input type="range" min={10} max={100} value={Math.round(logoOpacity * 100)} onChange={e => setLogoOpacity(Number(e.target.value) / 100)} style={{ width: "100%", accentColor: "#7c3aed" }} />
-              </div>
-              <div style={{ gridColumn: "span 2" }}>
-                <p style={{ color: "#55556a", fontSize: 11, margin: "0 0 6px" }}>POSICIÓN</p>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  {(["top", "bottom"] as const).map(v => (
-                    <button key={v} onClick={() => setLogoY(v)} style={{
-                      padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12,
-                      border: `1px solid ${logoY === v ? "#7c3aed" : "#2a2a3a"}`,
-                      background: logoY === v ? "rgba(124,58,237,0.2)" : "#1a1a26",
-                      color: logoY === v ? "#f0f0f5" : "#8888a0"
-                    }}>{v === "top" ? "Arriba" : "Abajo"}</button>
-                  ))}
-                  {(["left", "right"] as const).map(v => (
-                    <button key={v} onClick={() => setLogoX(v)} style={{
-                      padding: "6px 14px", borderRadius: 6, cursor: "pointer", fontSize: 12,
-                      border: `1px solid ${logoX === v ? "#7c3aed" : "#2a2a3a"}`,
-                      background: logoX === v ? "rgba(124,58,237,0.2)" : "#1a1a26",
-                      color: logoX === v ? "#f0f0f5" : "#8888a0"
-                    }}>{v === "left" ? "Izquierda" : "Derecha"}</button>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
+        )}
 
         {/* Caption */}
         {clip.tiktok_caption && (
           <div style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, padding: 16, marginBottom: 12 }}>
-            <p style={{ color: "#55556a", fontSize: 11, fontFamily: "JetBrains Mono", margin: "0 0 8px" }}>DESCRIPCIÓN TIKTOK</p>
-            <p style={{ color: "#f0f0f5", fontSize: 13, margin: "0 0 10px", lineHeight: 1.5 }}>{clip.tiktok_caption}</p>
+            <p style={{ color: "#55556a", fontSize: 11, fontFamily: "JetBrains Mono", margin: "0 0 8px" }}>
+              DESCRIPCIÓN TIKTOK
+            </p>
+            <p style={{ color: "#f0f0f5", fontSize: 13, margin: "0 0 10px", lineHeight: 1.5 }}>
+              {clip.tiktok_caption}
+            </p>
             <button onClick={() => navigator.clipboard.writeText(clip.tiktok_caption)} style={{
               background: "#1a1a26", border: "1px solid #2a2a3a", color: "#8888a0",
               borderRadius: 6, padding: "8px 12px", cursor: "pointer", fontSize: 12, width: "100%"
@@ -392,7 +440,9 @@ export default function ClipEditorPage() {
           {rendering ? "⏳ Renderizando..." : "🎬 Generar clip"}
         </button>
 
-        {error && <p style={{ color: "#ef4444", fontSize: 13, textAlign: "center", marginBottom: 10 }}>⚠ {error}</p>}
+        {error && (
+          <p style={{ color: "#ef4444", fontSize: 13, textAlign: "center", marginBottom: 10 }}>⚠ {error}</p>
+        )}
 
         {downloadUrl && (
           <a href={downloadUrl} download style={{

@@ -274,90 +274,118 @@ def detect_face_and_diagram(video_path: Path, start: float, end: float) -> dict:
 class RenderConfig(BaseModel):
     job_id: str
     clip_index: int
-    # Face crop (in original video pixels)
-    face_crop_x: int
-    face_crop_y: int
-    face_crop_w: int
-    face_crop_h: int
-    # Diagram crop (optional)
+    # Face source crop (original video pixels)
+    face_crop_x: int = 0
+    face_crop_y: int = 0
+    face_crop_w: int = 500
+    face_crop_h: int = 500
+    # Face dest on canvas (0..1)
+    face_dst_x: float = 0
+    face_dst_y: float = 0
+    face_dst_w: float = 1
+    face_dst_h: float = 0.5
+    face_visible: bool = True
+    # Diagram source crop
     diagram_crop_x: Optional[int] = None
     diagram_crop_y: Optional[int] = None
     diagram_crop_w: Optional[int] = None
     diagram_crop_h: Optional[int] = None
-    # Layout
-    layout: str = "face_only"  # "face_only" | "split" (face top 50% + diagram bottom 50%)
-    # Logo
+    # Diagram dest on canvas (0..1)
+    diagram_dst_x: float = 0
+    diagram_dst_y: float = 0.5
+    diagram_dst_w: float = 1
+    diagram_dst_h: float = 0.5
+    diagram_visible: bool = False
+    # Logo dest on canvas (0..1)
+    logo_dst_x: float = 0.7
+    logo_dst_y: float = 0.02
+    logo_dst_w: float = 0.25
+    logo_visible: bool = True
+    logo_opacity: float = 0.8
+    # Legacy compat
+    layout: str = "face_only"
     show_logo: bool = True
-    logo_size: int = 130  # px width
-    logo_x: str = "right"  # "right" | "left"
-    logo_y: str = "top"    # "top" | "bottom"
-    logo_opacity: float = 0.6
+    logo_size: int = 130
+    logo_x: str = "right"
+    logo_y: str = "top"
 
 
 def render_clip(video_path: str, start: float, duration: float,
                 config: RenderConfig, output_path: Path) -> bool:
+    """Render using canvas-based layout: each layer has src crop + dst position on 1080x1920."""
     vp = Path(video_path)
-    logo = str(LOGO_PATH) if LOGO_PATH.exists() else None
+    logo_path = str(LOGO_PATH) if LOGO_PATH.exists() else None
 
-    # Face crop → scale to 1080 wide
-    fx, fy, fw, fh = config.face_crop_x, config.face_crop_y, config.face_crop_w, config.face_crop_h
+    W, H = 1080, 1920  # output canvas
 
-    logo_x_pos = f"W-w-20" if config.logo_x == "right" else "20"
-    logo_y_pos = "20" if config.logo_y == "top" else "H-h-20"
+    filters = []
+    inputs = ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", str(vp)]
+    logo_input_idx = None
 
-    if config.layout == "split" and config.diagram_crop_w:
-        # Top half: face (540px high), Bottom half: diagram (540px high) — but 9:16 = 1080x1920
-        # Face: top 960px, Diagram: bottom 960px
-        dx, dy, dw, dh = config.diagram_crop_x, config.diagram_crop_y, config.diagram_crop_w, config.diagram_crop_h
+    if logo_path and config.logo_visible:
+        inputs += ["-i", logo_path]
+        logo_input_idx = 1
 
-        fc = f"[0:v]crop={fw}:{fh}:{fx}:{fy},scale=1080:960:force_original_aspect_ratio=decrease,pad=1080:960:(ow-iw)/2:(oh-ih)/2:black[face]"
-        dc = f"[0:v]crop={dw}:{dh}:{dx}:{dy},scale=1080:960:force_original_aspect_ratio=decrease,pad=1080:960:(ow-iw)/2:(oh-ih)/2:black[diag]"
+    # Black canvas base
+    filters.append(f"color=black:{W}x{H}:r=30[canvas]")
+    current = "canvas"
 
-        if logo:
-            filter_complex = (
-                f"{fc};"
-                f"{dc};"
-                f"[1:v]scale={config.logo_size}:-1,format=rgba,colorchannelmixer=aa={config.logo_opacity}[logo];"
-                f"[face][diag]vstack=inputs=2[stacked];"
-                f"[stacked][logo]overlay={logo_x_pos}:{logo_y_pos}[out]"
-            )
-            cmd = ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration),
-                   "-i", str(vp), "-i", logo,
-                   "-filter_complex", filter_complex, "-map", "[out]", "-map", "0:a"]
-        else:
-            filter_complex = (
-                f"{fc};"
-                f"{dc};"
-                f"[face][diag]vstack=inputs=2[out]"
-            )
-            cmd = ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration),
-                   "-i", str(vp),
-                   "-filter_complex", filter_complex, "-map", "[out]", "-map", "0:a"]
-    else:
-        # Face only — scale to fill 1080x1920
-        face_filter = f"[0:v]crop={fw}:{fh}:{fx}:{fy},scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[face]"
+    # ── Face layer ──
+    if config.face_visible:
+        fx, fy = config.face_crop_x, config.face_crop_y
+        fw, fh = config.face_crop_w, config.face_crop_h
+        # dest in pixels
+        dx = int(config.face_dst_x * W)
+        dy = int(config.face_dst_y * H)
+        dw = int(config.face_dst_w * W)
+        dh = int(config.face_dst_h * H)
+        filters.append(
+            f"[0:v]crop={fw}:{fh}:{fx}:{fy},"
+            f"scale={dw}:{dh}:force_original_aspect_ratio=decrease,"
+            f"pad={dw}:{dh}:(ow-iw)/2:(oh-ih)/2:black[face_l]"
+        )
+        filters.append(f"[{current}][face_l]overlay={dx}:{dy}[after_face]")
+        current = "after_face"
 
-        if logo:
-            filter_complex = (
-                f"{face_filter};"
-                f"[1:v]scale={config.logo_size}:-1,format=rgba,colorchannelmixer=aa={config.logo_opacity}[logo];"
-                f"[face][logo]overlay={logo_x_pos}:{logo_y_pos}[out]"
-            )
-            cmd = ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration),
-                   "-i", str(vp), "-i", logo,
-                   "-filter_complex", filter_complex, "-map", "[out]", "-map", "0:a"]
-        else:
-            filter_complex = f"{face_filter}"
-            cmd = ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration),
-                   "-i", str(vp),
-                   "-filter_complex", filter_complex, "-map", "[face]", "-map", "0:a"]
+    # ── Diagram layer ──
+    if config.diagram_visible and config.diagram_crop_w:
+        dx2 = int(config.diagram_dst_x * W)
+        dy2 = int(config.diagram_dst_y * H)
+        dw2 = int(config.diagram_dst_w * W)
+        dh2 = int(config.diagram_dst_h * H)
+        filters.append(
+            f"[0:v]crop={config.diagram_crop_w}:{config.diagram_crop_h}:{config.diagram_crop_x}:{config.diagram_crop_y},"
+            f"scale={dw2}:{dh2}:force_original_aspect_ratio=decrease,"
+            f"pad={dw2}:{dh2}:(ow-iw)/2:(oh-ih)/2:black[diag_l]"
+        )
+        filters.append(f"[{current}][diag_l]overlay={dx2}:{dy2}[after_diag]")
+        current = "after_diag"
 
-    cmd += ["-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
-            "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", str(output_path)]
+    # ── Logo layer ──
+    if logo_path and config.logo_visible and logo_input_idx is not None:
+        lx = int(config.logo_dst_x * W)
+        ly = int(config.logo_dst_y * H)
+        lw = int(config.logo_dst_w * W)
+        filters.append(
+            f"[{logo_input_idx}:v]scale={lw}:-1,"
+            f"format=rgba,colorchannelmixer=aa={config.logo_opacity}[logo_l]"
+        )
+        filters.append(f"[{current}][logo_l]overlay={lx}:{ly}[after_logo]")
+        current = "after_logo"
+
+    filter_complex = ";".join(filters)
+
+    cmd = inputs + [
+        "-filter_complex", filter_complex,
+        "-map", f"[{current}]", "-map", "0:a",
+        "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
+        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+        str(output_path)
+    ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        print("ffmpeg error:", result.stderr[-500:])
+        print("ffmpeg error:", result.stderr[-1000:])
         return False
     return True
 
