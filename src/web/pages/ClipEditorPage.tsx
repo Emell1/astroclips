@@ -54,13 +54,11 @@ function useLayerDrag(
           l.x = Math.max(0, Math.min(1 - l.w, o.x + dx))
           l.y = Math.max(0, Math.min(1 - l.h, o.y + dy))
         } else {
-          let { x, y, w, h } = o
           const minSize = 0.05
           if (handle.includes("l")) { const nx = Math.min(o.x + o.w - minSize, o.x + dx); l.x = Math.max(0, nx); l.w = o.w - (l.x - o.x) }
           if (handle.includes("r")) { l.w = Math.max(minSize, Math.min(1 - o.x, o.w + dx)) }
           if (handle.includes("t")) { const ny = Math.min(o.y + o.h - minSize, o.y + dy); l.y = Math.max(0, ny); l.h = o.h - (l.y - o.y) }
           if (handle.includes("b")) { l.h = Math.max(minSize, Math.min(1 - o.y, o.h + dy)) }
-          void x; void y; void w; void h
         }
         return { ...prev, [id]: l }
       })
