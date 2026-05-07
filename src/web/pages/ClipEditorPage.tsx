@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useLocation, useParams } from "wouter"
 
-const API = "http://localhost:8000"
+const API = "/processor"
 
 interface Visual {
   has_face: boolean
@@ -133,7 +133,7 @@ export default function ClipEditorPage() {
 
       if (!r.ok) throw new Error(await r.text())
       const data = await r.json()
-      setDownloadUrl(`${API}${data.url}`)
+      setDownloadUrl(data.url)
     } catch (e: any) {
       setError(e.message || "Error al renderizar")
     } finally {

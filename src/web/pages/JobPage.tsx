@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useLocation, useParams } from "wouter"
 
-const API = "http://localhost:8000"
+const API = "/processor"
 
 interface Clip {
   id: number

@@ -14,6 +14,17 @@ export default defineConfig({
 	},
 	server: {
 		allowedHosts: true,
-		hmr: { overlay: false, }
+		hmr: { overlay: false, },
+		proxy: {
+			"/processor": {
+				target: "http://localhost:8000",
+				changeOrigin: true,
+				rewrite: (path) => path.replace(/^\/processor/, ""),
+			},
+			"/outputs": {
+				target: "http://localhost:8000",
+				changeOrigin: true,
+			}
+		}
 	}
 });

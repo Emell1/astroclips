@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react"
 import { useLocation } from "wouter"
 
-const API = "http://localhost:8000"
+const API = "/processor"
 
 export default function UploadPage() {
   const [, nav] = useLocation()
