@@ -111,7 +111,7 @@ app.post("/api/setup", async (req, res) => {
     res.json({ ok: true });
 });
 // ── Processor proxy ───────────────────────────────────────────────────────
-app.all("/api/processor/:path(*)", requireAuth, async (req, res) => {
+app.all("/api/processor/*splat", requireAuth, async (req, res) => {
     if (!PROCESSOR_URL)
         return res.status(503).json({ error: "Processor not configured" });
     const proxyPath = req.path.replace("/api/processor", "");
@@ -143,7 +143,7 @@ app.all("/api/processor/:path(*)", requireAuth, async (req, res) => {
 });
 app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 // ── SPA fallback ──────────────────────────────────────────────────────────
-app.get("*", (_req, res) => {
+app.get("/*splat", (_req, res) => {
     res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
 // ── Start ─────────────────────────────────────────────────────────────────
