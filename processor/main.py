@@ -64,9 +64,11 @@ def update_job(job_id: str, **kwargs):
 
 def get_video_info(path: Path) -> dict:
     result = subprocess.run([
-        "ffprobe", "-v", "error", "-print_format", "json",
+        "ffprobe", "-v", "quiet", "-print_format", "json",
         "-show_streams", "-show_format", str(path)
     ], capture_output=True, text=True)
+    if not result.stdout.strip():
+        raise RuntimeError(f"ffprobe failed (returncode={result.returncode}): {result.stderr.strip()}")
     info = json.loads(result.stdout)
     duration = float(info["format"]["duration"])
     vs = next((s for s in info["streams"] if s["codec_type"] == "video"), {})
