@@ -1,0 +1,7 @@
+[build]
+dockerfilePath = "frontend/Dockerfile"
+
+[deploy]
+healthcheckPath = "/api/ping"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
