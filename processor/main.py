@@ -133,7 +133,7 @@ def score_clips_with_groq(clips: list) -> list:
         text = clip["text"][:800]
         try:
             response = client.chat.completions.create(
-                model="llama-3.1-70b-versatile",
+                model="llama-3.3-70b-versatile",
                 messages=[{
                     "role": "user",
                     "content": f"""Eres experto en contenido viral de TikTok de astrología en español de España.
