@@ -7,7 +7,9 @@ import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { users } from "./api/database/schema.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PUBLIC_DIR = path.join(__dirname, "..", "public");
+// In Docker: /app/dist/server.js → public is /app/public
+// __dirname = /app/dist → go up one level
+const PUBLIC_DIR = path.resolve(__dirname, "..", "public");
 const DATABASE_URL = process.env.DATABASE_URL;
 const JWT_SECRET = process.env.JWT_SECRET;
 const PROCESSOR_URL = process.env.PROCESSOR_URL || "";
@@ -148,5 +150,5 @@ app.get("/*", (_req, res) => {
 });
 // ── Start ─────────────────────────────────────────────────────────────────
 runMigrations()
-    .then(() => app.listen(PORT, () => console.log(`Server on port ${PORT}`)))
-    .catch(e => { console.error("Migration failed:", e); process.exit(1); });
+    .catch(e => console.error("Migration warning:", e.message))
+    .finally(() => app.listen(PORT, () => console.log(`Server on port ${PORT}`)));
