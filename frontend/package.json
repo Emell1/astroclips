@@ -9,10 +9,10 @@
   "dependencies": {
     "@hono/node-server": "^1.14.0",
     "@types/cookie-parser": "^1.4.10",
-    "@types/express": "^5.0.6",
+    "@types/express": "^4.17.25",
     "cookie-parser": "^1.4.7",
     "drizzle-orm": "^0.45.1",
-    "express": "^5.2.1",
+    "express": "^4.22.1",
     "hono": "^4.12.18",
     "jose": "^6.2.3",
     "postgres": "^3.4.5"
