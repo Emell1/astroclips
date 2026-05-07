@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react"
 import { useLocation } from "wouter"
 
-const API = "/processor"
+import { getToken } from "../lib/auth"
 
 export default function UploadPage() {
   const [, nav] = useLocation()
@@ -19,6 +19,7 @@ export default function UploadPage() {
     formData.append("file", file)
 
     try {
+      const token = getToken()
       const xhr = new XMLHttpRequest()
       xhr.upload.onprogress = (e) => {
         if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100))
@@ -30,7 +31,8 @@ export default function UploadPage() {
           else reject(new Error(xhr.responseText))
         }
         xhr.onerror = () => reject(new Error("Error de red"))
-        xhr.open("POST", `${API}/api/upload`)
+        xhr.open("POST", `/api/processor/api/upload`)
+        if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`)
         xhr.send(formData)
       })
 

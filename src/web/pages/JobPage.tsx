@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useLocation, useParams } from "wouter"
 
-const API = "/processor"
+import { processorFetch, getToken } from "../lib/auth"
 
 interface Clip {
   id: number
@@ -64,7 +64,7 @@ export default function JobPage() {
   useEffect(() => {
     const poll = async () => {
       try {
-        const r = await fetch(`${API}/api/job/${id}`)
+        const r = await processorFetch(`/api/job/${id}`)
         const data = await r.json()
         setJob(data)
         if (data.status !== "done" && data.status !== "error") {

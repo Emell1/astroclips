@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { useLocation, useParams } from "wouter"
 
-const API = "/processor"
+import { processorFetch, getToken } from "../lib/auth"
 
 interface Visual {
   has_face: boolean
@@ -71,7 +71,7 @@ export default function ClipEditorPage() {
   const [logoY, setLogoY] = useState<"top" | "bottom">("top")
 
   useEffect(() => {
-    fetch(`${API}/api/job/${id}`)
+    processorFetch(`/api/job/${id}`)
       .then(r => r.json())
       .then(job => {
         const c = job.clips[Number(index)]
@@ -125,7 +125,7 @@ export default function ClipEditorPage() {
         logo_opacity: logoOpacity,
       }
 
-      const r = await fetch(`${API}/api/render`, {
+      const r = await processorFetch(`/api/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
