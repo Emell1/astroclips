@@ -32,10 +32,14 @@ export async function getMe(): Promise<User | null> {
   const token = localStorage.getItem("token");
   if (!token) return null;
   try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     const r = await fetch(`${API}/auth/me`, {
       headers: { Authorization: `Bearer ${token}` },
       credentials: "include",
+      signal: controller.signal,
     });
+    clearTimeout(timeout);
     if (!r.ok) { localStorage.removeItem("token"); return null; }
     return r.json();
   } catch {
