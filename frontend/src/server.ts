@@ -120,7 +120,7 @@ app.post("/api/setup", async (req, res) => {
 
 // ── Processor proxy ───────────────────────────────────────────────────────
 
-app.all("/api/processor/*", requireAuth, async (req: any, res) => {
+app.all("/api/processor/:path(*)", requireAuth, async (req: any, res) => {
   if (!PROCESSOR_URL) return res.status(503).json({ error: "Processor not configured" });
   const proxyPath = req.path.replace("/api/processor", "");
   const url = `${PROCESSOR_URL}${proxyPath}`;
