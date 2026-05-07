@@ -7,14 +7,18 @@
     "build": "tsc"
   },
   "dependencies": {
-    "hono": "^4.12.18",
     "@hono/node-server": "^1.14.0",
-    "postgres": "^3.4.5",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "cookie-parser": "^1.4.7",
     "drizzle-orm": "^0.45.1",
-    "jose": "^6.2.3"
+    "express": "^5.2.1",
+    "hono": "^4.12.18",
+    "jose": "^6.2.3",
+    "postgres": "^3.4.5"
   },
   "devDependencies": {
-    "typescript": "^5.8.3",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.3"
   }
 }

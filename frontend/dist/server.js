@@ -1,221 +1,152 @@
-import { Hono } from "hono";
-import { cors } from "hono/cors";
-import { getCookie, setCookie, deleteCookie } from "hono/cookie";
-import { serveStatic } from "@hono/node-server/serve-static";
-import { serve } from "@hono/node-server";
+import express from "express";
+import path from "path";
+import { fileURLToPath } from "url";
 import { SignJWT, jwtVerify } from "jose";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
 import { users } from "./api/database/schema.js";
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const PUBLIC_DIR = path.join(__dirname, "..", "public");
 const DATABASE_URL = process.env.DATABASE_URL;
 const JWT_SECRET = process.env.JWT_SECRET;
 const PROCESSOR_URL = process.env.PROCESSOR_URL || "";
 const PORT = parseInt(process.env.PORT || "3000");
 const sql = postgres(DATABASE_URL, { ssl: "require" });
 const db = drizzle(sql);
-// Run migrations on startup
-async function runMigrations() {
-    await sql `
-    CREATE TABLE IF NOT EXISTS users (
-      id           TEXT PRIMARY KEY,
-      email        TEXT NOT NULL UNIQUE,
-      username     TEXT NOT NULL UNIQUE,
-      password_hash TEXT NOT NULL,
-      role         TEXT NOT NULL DEFAULT 'user',
-      created_at   BIGINT NOT NULL
-    )
-  `;
-    await sql `
-    CREATE TABLE IF NOT EXISTS sessions (
-      id         TEXT PRIMARY KEY,
-      user_id    TEXT NOT NULL REFERENCES users(id),
-      token      TEXT NOT NULL UNIQUE,
-      expires_at BIGINT NOT NULL,
-      created_at BIGINT NOT NULL
-    )
-  `;
-    console.log("Migrations done");
-}
-// ── Helpers ────────────────────────────────────────────────────────────────
+const app = express();
+app.use(express.json());
+// Serve static assets
+app.use(express.static(PUBLIC_DIR));
+// ── Helpers ───────────────────────────────────────────────────────────────
 async function hashPassword(password) {
     const enc = new TextEncoder();
-    const data = enc.encode(password);
-    const hash = await crypto.subtle.digest("SHA-256", data);
+    const hash = await crypto.subtle.digest("SHA-256", enc.encode(password));
     return btoa(String.fromCharCode(...new Uint8Array(hash)));
 }
-async function verifyPassword(password, hash) {
-    return (await hashPassword(password)) === hash;
-}
 async function createToken(userId) {
-    const key = new TextEncoder().encode(JWT_SECRET);
     return new SignJWT({ userId })
         .setProtectedHeader({ alg: "HS256" })
         .setExpirationTime("30d")
-        .sign(key);
+        .sign(new TextEncoder().encode(JWT_SECRET));
 }
 async function verifyToken(token) {
     try {
-        const key = new TextEncoder().encode(JWT_SECRET);
-        const { payload } = await jwtVerify(token, key);
+        const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET));
         return payload.userId;
     }
     catch {
         return null;
     }
 }
-const app = new Hono();
-app.use("*", cors({ origin: "*", credentials: true }));
-// ── Auth Middleware ────────────────────────────────────────────────────────
-async function requireAuth(c, next) {
-    const authHeader = c.req.header("Authorization");
-    const cookie = getCookie(c, "session");
-    const token = authHeader?.replace("Bearer ", "") || cookie;
+async function requireAuth(req, res, next) {
+    const token = req.headers.authorization?.replace("Bearer ", "") || req.cookies?.session;
     if (!token)
-        return c.json({ error: "Unauthorized" }, 401);
+        return res.status(401).json({ error: "Unauthorized" });
     const userId = await verifyToken(token);
     if (!userId)
-        return c.json({ error: "Invalid token" }, 401);
-    const result = await db.select().from(users).where(eq(users.id, userId));
-    const user = result[0];
+        return res.status(401).json({ error: "Invalid token" });
+    const [user] = await db.select().from(users).where(eq(users.id, userId));
     if (!user)
-        return c.json({ error: "User not found" }, 401);
-    c.set("userId", userId);
-    c.set("userRole", user.role);
-    await next();
+        return res.status(401).json({ error: "User not found" });
+    req.userId = userId;
+    req.userRole = user.role;
+    next();
 }
-// ── Auth Routes ────────────────────────────────────────────────────────────
-app.post("/api/auth/login", async (c) => {
-    const { username, password } = await c.req.json();
+// ── Migrations ────────────────────────────────────────────────────────────
+async function runMigrations() {
+    await sql `CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL, role TEXT NOT NULL DEFAULT 'user', created_at BIGINT NOT NULL
+  )`;
+    await sql `CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+    token TEXT NOT NULL UNIQUE, expires_at BIGINT NOT NULL, created_at BIGINT NOT NULL
+  )`;
+    console.log("Migrations done");
+}
+// ── Auth routes ───────────────────────────────────────────────────────────
+app.post("/api/auth/login", async (req, res) => {
+    const { username, password } = req.body;
     if (!username || !password)
-        return c.json({ error: "Missing fields" }, 400);
-    const result = await db.select().from(users).where(eq(users.username, username));
-    const user = result[0];
-    if (!user || !(await verifyPassword(password, user.passwordHash))) {
-        return c.json({ error: "Invalid credentials" }, 401);
-    }
+        return res.status(400).json({ error: "Missing fields" });
+    const [user] = await db.select().from(users).where(eq(users.username, username));
+    if (!user || (await hashPassword(password)) !== user.passwordHash)
+        return res.status(401).json({ error: "Invalid credentials" });
     const token = await createToken(user.id);
-    setCookie(c, "session", token, {
-        httpOnly: true,
-        secure: true,
-        sameSite: "Lax",
-        maxAge: 60 * 60 * 24 * 30,
-        path: "/",
-    });
-    return c.json({
-        token,
-        user: { id: user.id, username: user.username, email: user.email, role: user.role }
-    });
+    res.cookie("session", token, { httpOnly: true, secure: true, sameSite: "lax", maxAge: 30 * 24 * 3600 * 1000 });
+    res.json({ token, user: { id: user.id, username: user.username, email: user.email, role: user.role } });
 });
-app.post("/api/auth/logout", (c) => {
-    deleteCookie(c, "session");
-    return c.json({ ok: true });
+app.post("/api/auth/logout", (_req, res) => {
+    res.clearCookie("session");
+    res.json({ ok: true });
 });
-app.get("/api/auth/me", requireAuth, async (c) => {
-    const result = await db.select({
-        id: users.id, username: users.username, email: users.email, role: users.role
-    }).from(users).where(eq(users.id, c.get("userId")));
-    return c.json(result[0]);
+app.get("/api/auth/me", requireAuth, async (req, res) => {
+    const [user] = await db.select({ id: users.id, username: users.username, email: users.email, role: users.role })
+        .from(users).where(eq(users.id, req.userId));
+    res.json(user);
 });
-app.post("/api/auth/users", requireAuth, async (c) => {
-    if (c.get("userRole") !== "admin")
-        return c.json({ error: "Forbidden" }, 403);
-    const { username, email, password, role } = await c.req.json();
+app.post("/api/auth/users", requireAuth, async (req, res) => {
+    if (req.userRole !== "admin")
+        return res.status(403).json({ error: "Forbidden" });
+    const { username, email, password, role } = req.body;
     if (!username || !email || !password)
-        return c.json({ error: "Missing fields" }, 400);
+        return res.status(400).json({ error: "Missing fields" });
     const id = crypto.randomUUID();
-    const passwordHash = await hashPassword(password);
-    await db.insert(users).values({
-        id, username, email, passwordHash,
-        role: role || "user",
-        createdAt: Date.now(),
-    });
-    return c.json({ id, username, email, role: role || "user" });
+    await db.insert(users).values({ id, username, email, passwordHash: await hashPassword(password), role: role || "user", createdAt: Date.now() });
+    res.json({ id, username, email, role: role || "user" });
 });
-app.get("/api/auth/users", requireAuth, async (c) => {
-    if (c.get("userRole") !== "admin")
-        return c.json({ error: "Forbidden" }, 403);
-    const allUsers = await db.select({
-        id: users.id, username: users.username, email: users.email,
-        role: users.role, createdAt: users.createdAt
-    }).from(users);
-    return c.json(allUsers);
+app.get("/api/auth/users", requireAuth, async (req, res) => {
+    if (req.userRole !== "admin")
+        return res.status(403).json({ error: "Forbidden" });
+    res.json(await db.select({ id: users.id, username: users.username, email: users.email, role: users.role, createdAt: users.createdAt }).from(users));
 });
-// ── Setup ──────────────────────────────────────────────────────────────────
-app.post("/api/setup", async (c) => {
+app.post("/api/setup", async (req, res) => {
     const existing = await db.select().from(users).limit(1);
     if (existing.length > 0)
-        return c.json({ error: "Already set up" }, 400);
+        return res.status(400).json({ error: "Already set up" });
+    const { username, email, password } = req.body;
     const id = crypto.randomUUID();
-    const { username, email, password } = await c.req.json();
-    const passwordHash = await hashPassword(password);
-    await db.insert(users).values({
-        id, username, email, passwordHash,
-        role: "admin",
-        createdAt: Date.now(),
-    });
-    return c.json({ ok: true, message: "Admin created" });
+    await db.insert(users).values({ id, username, email, passwordHash: await hashPassword(password), role: "admin", createdAt: Date.now() });
+    res.json({ ok: true });
 });
-// ── Processor Proxy ────────────────────────────────────────────────────────
-app.all("/api/processor/*", requireAuth, async (c) => {
+// ── Processor proxy ───────────────────────────────────────────────────────
+app.all("/api/processor/*", requireAuth, async (req, res) => {
     if (!PROCESSOR_URL)
-        return c.json({ error: "Processor not configured" }, 503);
-    const proxyPath = c.req.path.replace("/api/processor", "");
+        return res.status(503).json({ error: "Processor not configured" });
+    const proxyPath = req.path.replace("/api/processor", "");
     const url = `${PROCESSOR_URL}${proxyPath}`;
-    const contentType = c.req.header("Content-Type") || "";
-    // Forward all headers except host
-    const forwardHeaders = {};
-    if (contentType)
-        forwardHeaders["Content-Type"] = contentType;
-    const init = {
-        method: c.req.method,
-        headers: forwardHeaders,
-    };
-    if (c.req.method !== "GET" && c.req.method !== "HEAD") {
-        // Buffer the body to avoid stream issues
-        const bodyBuffer = await c.req.arrayBuffer();
-        if (bodyBuffer.byteLength > 0) {
-            init.body = bodyBuffer;
-        }
-    }
     try {
-        const resp = await fetch(url, init);
-        const respContentType = resp.headers.get("content-type") || "application/json";
-        const body = await resp.arrayBuffer();
-        return new Response(body, {
-            status: resp.status,
-            headers: { "Content-Type": respContentType },
+        const chunks = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", async () => {
+            const body = Buffer.concat(chunks);
+            const headers = {};
+            if (req.headers["content-type"])
+                headers["content-type"] = req.headers["content-type"];
+            const fetchRes = await fetch(url, {
+                method: req.method,
+                headers,
+                body: body.length > 0 ? body : undefined,
+            });
+            res.status(fetchRes.status);
+            const ct = fetchRes.headers.get("content-type");
+            if (ct)
+                res.setHeader("content-type", ct);
+            const buf = await fetchRes.arrayBuffer();
+            res.send(Buffer.from(buf));
         });
     }
     catch (e) {
-        return c.json({ error: `Processor error: ${e.message}` }, 502);
+        res.status(502).json({ error: `Processor error: ${e.message}` });
     }
 });
-app.get("/api/ping", (c) => c.json({ ok: true, ts: Date.now() }));
-// ── Serve React SPA ────────────────────────────────────────────────────────
-// Static assets first (JS, CSS, images)
-app.use("/assets/*", serveStatic({ root: "./public" }));
-app.use("/favicon.ico", serveStatic({ root: "./public" }));
-app.use("/logo.svg", serveStatic({ root: "./public" }));
-app.use("/og-image.png", serveStatic({ root: "./public" }));
-// SPA fallback — all other routes return index.html
-app.get("/*", async (c) => {
-    const { readFileSync } = await import("fs");
-    const { join } = await import("path");
-    try {
-        const html = readFileSync(join(process.cwd(), "public", "index.html"), "utf-8");
-        return c.html(html);
-    }
-    catch {
-        return c.text("Not found", 404);
-    }
+app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now() }));
+// ── SPA fallback ──────────────────────────────────────────────────────────
+app.get("*", (_req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, "index.html"));
 });
-// ── Start ──────────────────────────────────────────────────────────────────
-runMigrations().then(() => {
-    serve({ fetch: app.fetch, port: PORT }, () => {
-        console.log(`Server running on port ${PORT}`);
-    });
-}).catch((e) => {
-    console.error("Migration failed:", e);
-    process.exit(1);
-});
+// ── Start ─────────────────────────────────────────────────────────────────
+runMigrations()
+    .then(() => app.listen(PORT, () => console.log(`Server on port ${PORT}`)))
+    .catch(e => { console.error("Migration failed:", e); process.exit(1); });
