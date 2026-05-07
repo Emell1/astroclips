@@ -28,7 +28,7 @@ BASE_DIR    = Path(__file__).parent
 UPLOADS_DIR = BASE_DIR / "uploads"
 OUTPUTS_DIR = BASE_DIR / "outputs"
 JOBS_DIR    = BASE_DIR / "jobs"
-LOGO_PATH   = Path("/home/user/astro_clips/logo.jpg")
+LOGO_PATH   = Path(os.environ.get("LOGO_PATH", str(BASE_DIR / "logo.jpg")))
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TIKTOK_W, TIKTOK_H = 1080, 1920
