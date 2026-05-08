@@ -696,6 +696,70 @@ async def get_job(job_id: str):
     return load_job(job_id)
 
 
+class UrlRequest(BaseModel):
+    url: str
+
+@app.post("/api/upload-url")
+async def upload_from_url(req: UrlRequest, background_tasks: BackgroundTasks):
+    url = req.url.strip()
+    if not url:
+        raise HTTPException(400, "URL vacía")
+
+    job_id = str(uuid.uuid4())[:8]
+    video_path = UPLOADS_DIR / f"{job_id}.mp4"
+
+    save_job(job_id, {
+        "id": job_id,
+        "filename": url,
+        "size_mb": 0,
+        "status": "downloading",
+        "progress": 0,
+        "step": "Descargando video de YouTube...",
+        "clips": [],
+        "video_path": str(video_path),
+        "r2_key": f"uploads/{job_id}.mp4",
+        "source_url": url,
+    })
+
+    background_tasks.add_task(download_and_process, job_id, url, video_path)
+    return {"job_id": job_id}
+
+
+async def download_and_process(job_id: str, url: str, video_path: Path):
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, _yt_download, job_id, url, video_path)
+        # Upload to R2
+        r2_key = f"uploads/{job_id}.mp4"
+        if R2_ENABLED:
+            try:
+                r2_upload(video_path, r2_key)
+            except Exception as e:
+                print(f"[R2] upload error (non-fatal): {e}")
+        size_mb = round(video_path.stat().st_size / (1024 * 1024), 1)
+        update_job(job_id, size_mb=size_mb, status="uploaded", step="Video descargado. Iniciando análisis...")
+        await process_video_job(job_id, video_path)
+    except Exception as e:
+        update_job(job_id, status="error", error=str(e), step=f"Error: {e}")
+
+
+def _yt_download(job_id: str, url: str, video_path: Path):
+    import subprocess as sp
+    cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--merge-output-format", "mp4",
+        "-o", str(video_path),
+        url,
+    ]
+    result = sp.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"yt-dlp falló: {result.stderr[-500:]}")
+    if not video_path.exists():
+        raise RuntimeError("yt-dlp no generó el archivo de video")
+
+
 render_jobs: dict = {}  # render_id -> {status, url, error}  (in-memory cache)
 
 def save_render_job(render_id: str, data: dict):

@@ -9,6 +9,8 @@ export default function UploadPage() {
   const [uploading, setUploading] = useState(false)
   const [progress, setProgress] = useState(0)
   const [error, setError] = useState("")
+  const [youtubeUrl, setYoutubeUrl] = useState("")
+  const [loadingUrl, setLoadingUrl] = useState(false)
 
   const uploadFile = async (file: File) => {
     setUploading(true)
@@ -54,6 +56,29 @@ export default function UploadPage() {
   const onFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) uploadFile(file)
+  }
+
+  const submitYoutubeUrl = async () => {
+    if (!youtubeUrl.trim()) return
+    setLoadingUrl(true)
+    setError("")
+    try {
+      const token = getToken()
+      const res = await fetch("/api/processor/api/upload-url", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ url: youtubeUrl.trim() }),
+      })
+      if (!res.ok) throw new Error(await res.text())
+      const data = await res.json()
+      nav(`/job/${data.job_id}`)
+    } catch (e: any) {
+      setError(e.message || "Error al procesar la URL")
+      setLoadingUrl(false)
+    }
   }
 
   return (
@@ -124,6 +149,53 @@ export default function UploadPage() {
             </p>
           </div>
         )}
+      </div>
+
+      {/* Divider */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", maxWidth: 560, marginTop: 24 }}>
+        <div style={{ flex: 1, height: 1, background: "#2a2a3a" }} />
+        <span style={{ color: "#55556a", fontSize: 13 }}>o pega un link de YouTube</span>
+        <div style={{ flex: 1, height: 1, background: "#2a2a3a" }} />
+      </div>
+
+      {/* YouTube URL input */}
+      <div style={{ width: "100%", maxWidth: 560, marginTop: 16, display: "flex", gap: 10 }}>
+        <input
+          type="url"
+          placeholder="https://youtube.com/watch?v=..."
+          value={youtubeUrl}
+          onChange={e => setYoutubeUrl(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && submitYoutubeUrl()}
+          disabled={uploading || loadingUrl}
+          style={{
+            flex: 1,
+            background: "#12121a",
+            border: "1px solid #2a2a3a",
+            borderRadius: 8,
+            padding: "10px 14px",
+            color: "#f0f0f5",
+            fontSize: 14,
+            outline: "none",
+          }}
+        />
+        <button
+          onClick={submitYoutubeUrl}
+          disabled={uploading || loadingUrl || !youtubeUrl.trim()}
+          style={{
+            padding: "10px 20px",
+            borderRadius: 8,
+            background: youtubeUrl.trim() && !loadingUrl ? "#7c3aed" : "#2a2a3a",
+            color: "#fff",
+            fontWeight: 600,
+            fontSize: 14,
+            border: "none",
+            cursor: youtubeUrl.trim() && !loadingUrl ? "pointer" : "not-allowed",
+            transition: "background 0.2s",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {loadingUrl ? "Procesando..." : "Analizar"}
+        </button>
       </div>
 
       {error && (
