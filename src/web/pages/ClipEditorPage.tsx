@@ -24,7 +24,7 @@ interface Layer {
 const CANVAS_W = 720
 const CANVAS_H = 1280
 
-// ── Drag logic ───────────────────────────────────────────────────────────
+// ── Drag logic (dest layer) ──────────────────────────────────────────────
 type DragHandle = "move" | "tl" | "tr" | "bl" | "br"
 
 function useLayerDrag(
@@ -80,6 +80,139 @@ function useLayerDrag(
   return { startDrag }
 }
 
+// ── Crop drag (source region) ────────────────────────────────────────────
+// The crop box is shown over the full background frame.
+// Positions are in 0..1 relative to the background display (displayW x displayH),
+// which we then convert to pixel coords in origW x origH.
+
+function useCropDrag(
+  layers: Record<string, Layer>,
+  setLayers: React.Dispatch<React.SetStateAction<Record<string, Layer>>>,
+  origW: number,
+  origH: number,
+  displayW: number,
+  displayH: number,
+) {
+  const dragging = useRef<{
+    id: string; handle: DragHandle
+    startX: number; startY: number
+    origSrcX: number; origSrcY: number; origSrcW: number; origSrcH: number
+  } | null>(null)
+
+  const startCropDrag = useCallback((e: React.MouseEvent | React.TouchEvent, id: string, handle: DragHandle) => {
+    e.preventDefault(); e.stopPropagation()
+    const pt = "touches" in e ? e.touches[0] : e
+    const l = layers[id]
+    dragging.current = { id, handle, startX: pt.clientX, startY: pt.clientY, origSrcX: l.srcX, origSrcY: l.srcY, origSrcW: l.srcW, origSrcH: l.srcH }
+
+    const onMove = (ev: MouseEvent | TouchEvent) => {
+      if (!dragging.current) return
+      const { id, handle, startX, startY, origSrcX: ox, origSrcY: oy, origSrcW: ow, origSrcH: oh } = dragging.current
+      const pt2 = "touches" in ev ? (ev as TouchEvent).touches[0] : ev as MouseEvent
+      // delta in original video pixels
+      const ddx = ((pt2.clientX - startX) / displayW) * origW
+      const ddy = ((pt2.clientY - startY) / displayH) * origH
+      const minPx = 50
+
+      setLayers(prev => {
+        const l = { ...prev[id] }
+        if (handle === "move") {
+          l.srcX = Math.max(0, Math.min(origW - l.srcW, ox + ddx))
+          l.srcY = Math.max(0, Math.min(origH - l.srcH, oy + ddy))
+        } else {
+          if (handle.includes("l")) {
+            const nx = Math.min(ox + ow - minPx, ox + ddx)
+            l.srcX = Math.max(0, nx)
+            l.srcW = ow - (l.srcX - ox)
+          }
+          if (handle.includes("r")) { l.srcW = Math.max(minPx, Math.min(origW - ox, ow + ddx)) }
+          if (handle.includes("t")) {
+            const ny = Math.min(oy + oh - minPx, oy + ddy)
+            l.srcY = Math.max(0, ny)
+            l.srcH = oh - (l.srcY - oy)
+          }
+          if (handle.includes("b")) { l.srcH = Math.max(minPx, Math.min(origH - oy, oh + ddy)) }
+        }
+        return { ...prev, [id]: l }
+      })
+    }
+
+    const onUp = () => {
+      dragging.current = null
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+      window.removeEventListener("touchmove", onMove)
+      window.removeEventListener("touchend", onUp)
+    }
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+    window.addEventListener("touchmove", onMove, { passive: false })
+    window.addEventListener("touchend", onUp)
+  }, [layers, origW, origH, displayW, displayH, setLayers])
+
+  return { startCropDrag }
+}
+
+// ── CropBox: dashed box on the background frame showing the source crop ──
+function CropBox({
+  layer, color, origW, origH, displayW, displayH, onDragStart
+}: {
+  layer: Layer; color: string
+  origW: number; origH: number; displayW: number; displayH: number
+  onDragStart: (e: React.MouseEvent | React.TouchEvent, handle: DragHandle) => void
+}) {
+  if (!layer.visible || layer.srcW <= 0 || layer.srcH <= 0) return null
+
+  // Convert src pixels → display pixels
+  const px = (layer.srcX / origW) * displayW
+  const py = (layer.srcY / origH) * displayH
+  const pw = (layer.srcW / origW) * displayW
+  const ph = (layer.srcH / origH) * displayH
+  const HS = 18
+
+  const handles: { h: DragHandle; cx: number; cy: number }[] = [
+    { h: "tl", cx: px, cy: py },
+    { h: "tr", cx: px + pw, cy: py },
+    { h: "bl", cx: px, cy: py + ph },
+    { h: "br", cx: px + pw, cy: py + ph },
+  ]
+
+  return (
+    <>
+      <div style={{
+        position: "absolute", left: px, top: py, width: pw, height: ph,
+        border: `2px dashed ${color}`,
+        boxSizing: "border-box", cursor: "move",
+        touchAction: "none", userSelect: "none",
+        background: `${color}18`,
+        zIndex: 5,
+      }}
+        onMouseDown={e => onDragStart(e, "move")}
+        onTouchStart={e => onDragStart(e, "move")}
+      >
+        <span style={{
+          position: "absolute", bottom: 3, right: 4, fontSize: 9, fontWeight: 700,
+          color, background: "rgba(0,0,0,0.75)", padding: "1px 5px", borderRadius: 3,
+          pointerEvents: "none", whiteSpace: "nowrap"
+        }}>✂ RECORTE</span>
+      </div>
+      {handles.map(({ h, cx, cy }) => (
+        <div key={h} style={{
+          position: "absolute",
+          left: cx - HS / 2, top: cy - HS / 2,
+          width: HS, height: HS,
+          background: color, border: "2px solid #000", borderRadius: 3,
+          cursor: h === "tl" || h === "br" ? "nwse-resize" : "nesw-resize",
+          touchAction: "none", zIndex: 15,
+        }}
+          onMouseDown={e => onDragStart(e, h)}
+          onTouchStart={e => onDragStart(e, h)}
+        />
+      ))}
+    </>
+  )
+}
+
 // ── Layer element ────────────────────────────────────────────────────────
 
 function LayerBox({
@@ -100,11 +233,8 @@ function LayerBox({
   const HS = 20
 
   // Crop the source frame into the box using background-image
-  const scaleX = displayW / origW  // display px per orig px... no: frame is shown at displayW wide
-  const cropL = (layer.srcX / origW) * 100
-  const cropT = (layer.srcY / origH) * 100
-  const bgSizeW = (origW / layer.srcW) * 100
-  const bgSizeH = (origH / layer.srcH) * 100
+  const bgSizeW = layer.srcW > 0 ? (origW / layer.srcW) * 100 : 100
+  const bgSizeH = layer.srcH > 0 ? (origH / layer.srcH) * 100 : 100
 
   const handles: { h: DragHandle; cx: number; cy: number }[] = [
     { h: "tl", cx: px, cy: py },
@@ -112,8 +242,6 @@ function LayerBox({
     { h: "bl", cx: px, cy: py + ph },
     { h: "br", cx: px + pw, cy: py + ph },
   ]
-
-  void scaleX; void cropL; void cropT
 
   return (
     <>
@@ -129,6 +257,7 @@ function LayerBox({
           backgroundPosition: `-${(layer.srcX / layer.srcW) * pw}px -${(layer.srcY / layer.srcH) * ph}px`,
           backgroundRepeat: "no-repeat",
           backgroundColor: "#1a1a26",
+          zIndex: 8,
         }}
         onMouseDown={e => onDragStart(e, "move")}
         onTouchStart={e => onDragStart(e, "move")}
@@ -167,9 +296,9 @@ export default function ClipEditorPage() {
   const [renderSecs, setRenderSecs] = useState(0)
   const [downloadUrl, setDownloadUrl] = useState("")
   const [error, setError] = useState("")
-  const [frameUrl, setFrameUrl] = useState("")
   const [frameBlobUrl, setFrameBlobUrl] = useState("")
   const [logoBlobUrl, setLogoBlobUrl] = useState("")
+  const [cropMode, setCropMode] = useState<string | null>(null) // layer id being cropped
   const canvasRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [displayW, setDisplayW] = useState(270)
@@ -187,6 +316,7 @@ export default function ClipEditorPage() {
   const [activeLayer, setActiveLayer] = useState<string | null>(null)
 
   const { startDrag } = useLayerDrag(canvasRef, layers, setLayers, displayW, displayH)
+  const { startCropDrag } = useCropDrag(layers, setLayers, origW, origH, displayW, displayH)
 
   // Measure canvas width — fixed 9:16, max 320px wide
   useEffect(() => {
@@ -207,13 +337,12 @@ export default function ClipEditorPage() {
       const c: Clip = job.clips[Number(index)]
       setClip(c)
       const t = Math.round(c.start + (c.end - c.start) / 2)
-      const frameApiUrl = `/api/processor/api/frame/${id}?t=${t}`
-      setFrameUrl(frameApiUrl)
-      // Fetch frame with auth token → blob URL so <img> works
+      // Fetch frame blob
       processorFetch(`/api/frame/${id}?t=${t}`)
         .then(r => r.ok ? r.blob() : null)
         .then(blob => { if (blob) setFrameBlobUrl(URL.createObjectURL(blob)) })
         .catch(() => {})
+      // Fetch logo blob
       processorFetch(`/api/logo`)
         .then(r => r.ok ? r.blob() : null)
         .then(blob => { if (blob) setLogoBlobUrl(URL.createObjectURL(blob)) })
@@ -336,6 +465,7 @@ export default function ClipEditorPage() {
               onClick={() => {
                 setLayers(p => ({ ...p, [lid]: { ...p[lid], visible: !p[lid].visible } }))
                 setActiveLayer(lid)
+                setCropMode(null)
               }}
               style={{
                 padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13,
@@ -346,11 +476,33 @@ export default function ClipEditorPage() {
           ))}
         </div>
 
+        {/* Crop mode toggle — only for face/diag */}
+        {activeLayer && activeLayer !== "logo" && layers[activeLayer]?.visible && (
+          <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }}>
+            <button
+              onClick={() => setCropMode(cropMode === activeLayer ? null : activeLayer)}
+              style={{
+                padding: "7px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12,
+                border: `2px solid ${cropMode === activeLayer ? "#ef4444" : "#2a2a3a"}`,
+                background: cropMode === activeLayer ? "#ef444422" : "#1a1a26",
+                color: cropMode === activeLayer ? "#ef4444" : "#8888a0", fontWeight: 600,
+              }}
+            >
+              {cropMode === activeLayer ? "✂ Modo recorte activo" : "✂ Ajustar recorte fuente"}
+            </button>
+            {cropMode === activeLayer && (
+              <span style={{ color: "#55556a", fontSize: 11 }}>
+                Arrastra el cuadro punteado sobre el frame
+              </span>
+            )}
+          </div>
+        )}
+
         {/* 9:16 Canvas */}
         <div ref={containerRef} style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
           <div style={{ padding: "8px 12px", borderBottom: "1px solid #1a1a26" }}>
             <span style={{ color: "#55556a", fontSize: 11, fontFamily: "JetBrains Mono" }}>
-              ARRASTRA Y REDIMENSIONA CADA CAPA · 9:16
+              {cropMode ? "✂ MODO RECORTE — arrastra el cuadro punteado" : "ARRASTRA Y REDIMENSIONA CADA CAPA · 9:16"}
             </span>
           </div>
           <div style={{ display: "flex", justifyContent: "center", background: "#0a0a0f", padding: "8px 0" }}>
@@ -365,7 +517,7 @@ export default function ClipEditorPage() {
               touchAction: "none",
               flexShrink: 0,
             }}
-            onClick={() => setActiveLayer(null)}
+            onClick={() => { if (!cropMode) setActiveLayer(null) }}
           >
             {/* Background frame */}
             {frameBlobUrl && (
@@ -374,75 +526,98 @@ export default function ClipEditorPage() {
                 alt=""
                 style={{
                   position: "absolute", inset: 0, width: "100%", height: "100%",
-                  objectFit: "cover", opacity: 0.5, pointerEvents: "none"
+                  objectFit: "cover", opacity: cropMode ? 0.85 : 0.5, pointerEvents: "none",
+                  zIndex: 1,
                 }}
               />
             )}
-            {!frameBlobUrl && frameUrl && (
-              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            {!frameBlobUrl && (
+              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1 }}>
                 <span style={{ color: "#55556a", fontSize: 12 }}>Cargando frame...</span>
               </div>
             )}
 
-            {/* Layers */}
-            {layerDefs.filter(l => l.id !== "logo").map(({ id: lid, label, color }) => (
-              <LayerBox
-                key={lid}
-                layer={layers[lid]}
-                frameUrl={lid !== "logo" ? frameBlobUrl : ""}
-                color={color}
-                label={label}
-                displayW={displayW}
-                displayH={displayH}
-                origW={origW}
-                origH={origH}
-                onDragStart={(e, handle) => {
-                  setActiveLayer(lid)
-                  startDrag(e, lid, handle)
-                }}
-              />
-            ))}
-
-            {/* Logo layer — just colored box */}
-            {layers.logo.visible && (() => {
-              const l = layers.logo
-              const px = l.x * displayW, py = l.y * displayH
-              const pw = l.w * displayW, ph = l.h * displayH
-              const HS = 20
-              const handles: { h: DragHandle; cx: number; cy: number }[] = [
-                { h: "tl", cx: px, cy: py }, { h: "tr", cx: px + pw, cy: py },
-                { h: "bl", cx: px, cy: py + ph }, { h: "br", cx: px + pw, cy: py + ph },
-              ]
+            {/* CROP MODE: show crop box over background, hide dest layers */}
+            {cropMode && cropMode !== "logo" && (() => {
+              const def = layerDefs.find(d => d.id === cropMode)!
+              const layer = layers[cropMode]
               return (
-                <>
-                  <div style={{
-                    position: "absolute", left: px, top: py, width: pw, height: ph,
-                    border: "2px solid #10b981", background: "rgba(16,185,129,0.15)",
-                    cursor: "move", touchAction: "none", boxSizing: "border-box",
-                    display: "flex", alignItems: "center", justifyContent: "center"
-                  }}
-                    onMouseDown={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
-                    onTouchStart={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
-                  >
-                    {logoBlobUrl
-                      ? <img src={logoBlobUrl} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none", opacity: logoOpacity }} />
-                      : <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, pointerEvents: "none" }}>LOGO</span>
-                    }
-                  </div>
-                  {handles.map(({ h, cx, cy }) => (
-                    <div key={h} style={{
-                      position: "absolute", left: cx - HS / 2, top: cy - HS / 2,
-                      width: HS, height: HS, background: "#10b981", border: "2px solid #000",
-                      borderRadius: 4, cursor: h === "tl" || h === "br" ? "nwse-resize" : "nesw-resize",
-                      touchAction: "none", zIndex: 10
-                    }}
-                      onMouseDown={e => { setActiveLayer("logo"); startDrag(e, "logo", h) }}
-                      onTouchStart={e => { setActiveLayer("logo"); startDrag(e, "logo", h) }}
-                    />
-                  ))}
-                </>
+                <CropBox
+                  layer={layer}
+                  color={def.color}
+                  origW={origW}
+                  origH={origH}
+                  displayW={displayW}
+                  displayH={displayH}
+                  onDragStart={(e, handle) => startCropDrag(e, cropMode, handle)}
+                />
               )
             })()}
+
+            {/* DEST MODE: show dest layer boxes */}
+            {!cropMode && (
+              <>
+                {layerDefs.filter(l => l.id !== "logo").map(({ id: lid, label, color }) => (
+                  <LayerBox
+                    key={lid}
+                    layer={layers[lid]}
+                    frameUrl={frameBlobUrl}
+                    color={color}
+                    label={label}
+                    displayW={displayW}
+                    displayH={displayH}
+                    origW={origW}
+                    origH={origH}
+                    onDragStart={(e, handle) => {
+                      setActiveLayer(lid)
+                      startDrag(e, lid, handle)
+                    }}
+                  />
+                ))}
+
+                {/* Logo layer */}
+                {layers.logo.visible && (() => {
+                  const l = layers.logo
+                  const lpx = l.x * displayW, lpy = l.y * displayH
+                  const lpw = l.w * displayW, lph = l.h * displayH
+                  const HS = 20
+                  const handles: { h: DragHandle; cx: number; cy: number }[] = [
+                    { h: "tl", cx: lpx, cy: lpy }, { h: "tr", cx: lpx + lpw, cy: lpy },
+                    { h: "bl", cx: lpx, cy: lpy + lph }, { h: "br", cx: lpx + lpw, cy: lpy + lph },
+                  ]
+                  return (
+                    <>
+                      <div style={{
+                        position: "absolute", left: lpx, top: lpy, width: lpw, height: lph,
+                        border: "2px solid #10b981", background: "rgba(16,185,129,0.15)",
+                        cursor: "move", touchAction: "none", boxSizing: "border-box",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        zIndex: 8,
+                      }}
+                        onMouseDown={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
+                        onTouchStart={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
+                      >
+                        {logoBlobUrl
+                          ? <img src={logoBlobUrl} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none", opacity: logoOpacity }} />
+                          : <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, pointerEvents: "none" }}>LOGO</span>
+                        }
+                      </div>
+                      {handles.map(({ h, cx, cy }) => (
+                        <div key={h} style={{
+                          position: "absolute", left: cx - HS / 2, top: cy - HS / 2,
+                          width: HS, height: HS, background: "#10b981", border: "2px solid #000",
+                          borderRadius: 4, cursor: h === "tl" || h === "br" ? "nwse-resize" : "nesw-resize",
+                          touchAction: "none", zIndex: 10
+                        }}
+                          onMouseDown={e => { setActiveLayer("logo"); startDrag(e, "logo", h) }}
+                          onTouchStart={e => { setActiveLayer("logo"); startDrag(e, "logo", h) }}
+                        />
+                      ))}
+                    </>
+                  )
+                })()}
+              </>
+            )}
           </div>
           </div>
         </div>
