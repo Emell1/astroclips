@@ -13,6 +13,9 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
+import tempfile
+import boto3
+from botocore.config import Config as BotoConfig
 import cv2
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
@@ -33,6 +36,64 @@ LOGO_PATH   = Path(os.environ.get("LOGO_PATH", str(BASE_DIR / "logo.jpg")))
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TIKTOK_W, TIKTOK_H = 1080, 1920
+
+# ── R2 Config ─────────────────────────────────────────────────────────────
+R2_ACCOUNT_ID      = os.environ.get("R2_ACCOUNT_ID", "")
+R2_ACCESS_KEY_ID   = os.environ.get("R2_ACCESS_KEY_ID", "")
+R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY", "")
+R2_BUCKET          = os.environ.get("R2_BUCKET", "astroclips")
+R2_ENABLED = bool(R2_ACCOUNT_ID and R2_ACCESS_KEY_ID and R2_SECRET_ACCESS_KEY)
+
+def _r2_client():
+    return boto3.client(
+        "s3",
+        endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="auto",
+    )
+
+def r2_upload(local_path: Path, key: str):
+    """Upload a file to R2."""
+    if not R2_ENABLED:
+        return
+    client = _r2_client()
+    client.upload_file(str(local_path), R2_BUCKET, key)
+    print(f"[R2] uploaded {key}")
+
+def r2_download(key: str, local_path: Path):
+    """Download a file from R2 to local_path."""
+    if not R2_ENABLED:
+        raise FileNotFoundError(f"R2 not configured, cannot fetch {key}")
+    client = _r2_client()
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    client.download_file(R2_BUCKET, key, str(local_path))
+    print(f"[R2] downloaded {key}")
+
+def r2_exists(key: str) -> bool:
+    """Check if a key exists in R2."""
+    if not R2_ENABLED:
+        return False
+    try:
+        _r2_client().head_object(Bucket=R2_BUCKET, Key=key)
+        return True
+    except Exception:
+        return False
+
+def ensure_video_local(job_id: str, job: dict) -> Path:
+    """Make sure the video is available locally. Download from R2 if needed."""
+    # Try stored path first
+    stored = Path(job.get("video_path", ""))
+    if stored.exists():
+        return stored
+    # Try R2
+    r2_key = job.get("r2_key", f"uploads/{job_id}.mp4")
+    local = UPLOADS_DIR / f"{job_id}.mp4"
+    if local.exists():
+        return local
+    r2_download(r2_key, local)
+    return local
 
 for d in [UPLOADS_DIR, OUTPUTS_DIR, JOBS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
@@ -394,6 +455,11 @@ def render_clip(video_path: str, start: float, duration: float,
 
 async def process_video_job(job_id: str, video_path: Path):
     try:
+        # video_path passed directly at upload time — should exist locally
+        # If it doesn't (e.g. after a restart), try R2
+        if not video_path.exists():
+            job = load_job(job_id)
+            video_path = ensure_video_local(job_id, job)
         update_job(job_id, status="analyzing", progress=5, step="Obteniendo info del video...")
         info = get_video_info(video_path)
         update_job(job_id, video_info=info, progress=10)
@@ -455,6 +521,14 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
 
     size_mb = video_path.stat().st_size / (1024 * 1024)
 
+    # Upload to R2 for persistence
+    r2_key = f"uploads/{job_id}.mp4"
+    if R2_ENABLED:
+        try:
+            r2_upload(video_path, r2_key)
+        except Exception as e:
+            print(f"[R2] upload error (non-fatal): {e}")
+
     save_job(job_id, {
         "id": job_id,
         "filename": file.filename,
@@ -464,6 +538,7 @@ async def upload_video(background_tasks: BackgroundTasks, file: UploadFile = Fil
         "step": "Video subido. Iniciando análisis...",
         "clips": [],
         "video_path": str(video_path),
+        "r2_key": r2_key,
     })
 
     background_tasks.add_task(process_video_job, job_id, video_path)
@@ -484,16 +559,28 @@ async def render_clip_endpoint(config: RenderConfig):
         raise HTTPException(400, "Clip index out of range")
 
     clip = clips[config.clip_index]
-    video_path = job["video_path"]
+    # Ensure video is local (download from R2 if needed)
+    try:
+        video_path = ensure_video_local(config.job_id, job)
+    except Exception as e:
+        raise HTTPException(404, f"Video no disponible: {e}")
+
     start = clip["start"]
     duration = clip["end"] - clip["start"]
 
     out_name = f"{config.job_id}_clip{config.clip_index}.mp4"
     output_path = OUTPUTS_DIR / out_name
 
-    success = render_clip(video_path, start, duration, config, output_path)
+    success = render_clip(str(video_path), start, duration, config, output_path)
     if not success:
         raise HTTPException(500, "Error al renderizar el clip")
+
+    # Upload output to R2 as well
+    if R2_ENABLED:
+        try:
+            r2_upload(output_path, f"outputs/{out_name}")
+        except Exception as e:
+            print(f"[R2] output upload error (non-fatal): {e}")
 
     return {"url": f"/api/download/{out_name}", "filename": out_name}
 
@@ -509,9 +596,13 @@ async def download_file(filename: str):
 @app.get("/api/frame/{job_id}")
 async def get_frame(job_id: str, t: float = 0):
     job = load_job(job_id)
-    video_path = Path(job["video_path"])
     frame_path = OUTPUTS_DIR / f"{job_id}_frame.jpg"
     if not frame_path.exists():
+        # Ensure video is local (download from R2 if needed)
+        try:
+            video_path = ensure_video_local(job_id, job)
+        except Exception as e:
+            raise HTTPException(404, f"Video no disponible para extraer frame: {e}")
         subprocess.run([
             "ffmpeg", "-y", "-ss", str(t), "-i", str(video_path),
             "-vframes", "1", "-q:v", "3", "-vf", "scale=1280:-1",
@@ -524,7 +615,7 @@ async def get_frame(job_id: str, t: float = 0):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "groq": bool(GROQ_API_KEY)}
+    return {"status": "ok", "groq": bool(GROQ_API_KEY), "r2": R2_ENABLED}
 
 
 if __name__ == "__main__":

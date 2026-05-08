@@ -5,3 +5,4 @@ groq==1.2.0
 faster-whisper==1.2.1
 opencv-python-headless==4.13.0.92
 numpy==2.2.5
+boto3==1.38.0
