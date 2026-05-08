@@ -698,9 +698,11 @@ async def do_render_background(render_id: str, config: RenderConfig, job: dict):
 @app.post("/api/render")
 async def render_clip_endpoint(config: RenderConfig, background_tasks: BackgroundTasks):
     job = load_job(config.job_id)
-    clips = job.get("clips", [])
-    if config.clip_index >= len(clips):
-        raise HTTPException(400, "Clip index out of range")
+    # Allow clip_start/clip_end override without needing clips[] entry
+    if config.clip_start is None or config.clip_end is None:
+        clips = job.get("clips", [])
+        if config.clip_index >= len(clips):
+            raise HTTPException(400, "Clip index out of range")
 
     render_id = f"{config.job_id}_clip{config.clip_index}"
     render_jobs[render_id] = {"status": "rendering"}
