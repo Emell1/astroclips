@@ -440,10 +440,10 @@ class RenderConfig(BaseModel):
     job_id: str
     clip_index: int
     # Face source crop (original video pixels)
-    face_crop_x: int = 0
-    face_crop_y: int = 0
-    face_crop_w: int = 500
-    face_crop_h: int = 500
+    face_crop_x: float = 0
+    face_crop_y: float = 0
+    face_crop_w: float = 500
+    face_crop_h: float = 500
     # Face dest on canvas (0..1)
     face_dst_x: float = 0
     face_dst_y: float = 0
@@ -504,8 +504,8 @@ def render_clip(video_path: str, start: float, duration: float,
 
     # ── Face layer → base ──
     if config.face_visible:
-        fx, fy = config.face_crop_x, config.face_crop_y
-        fw, fh = config.face_crop_w, config.face_crop_h
+        fx, fy = int(config.face_crop_x), int(config.face_crop_y)
+        fw, fh = int(config.face_crop_w), int(config.face_crop_h)
         dx = int(config.face_dst_x * W)
         dy = int(config.face_dst_y * H)
         dw = int(config.face_dst_w * W)
