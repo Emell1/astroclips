@@ -10,6 +10,7 @@ import uuid
 import shutil
 import asyncio
 import subprocess
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -105,12 +106,78 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 # Serve outputs as static files
 app.mount("/outputs", StaticFiles(directory=str(OUTPUTS_DIR)), name="outputs")
 
+# ── Database ──────────────────────────────────────────────────────────────
+_DATABASE_URL = os.environ.get("DATABASE_URL")
+_pg_conn = None  # module-level connection (reconnect on error)
+
+def _get_pg():
+    global _pg_conn
+    if _pg_conn is None or _pg_conn.closed:
+        import psycopg2
+        _pg_conn = psycopg2.connect(_DATABASE_URL)
+        _pg_conn.autocommit = True
+    return _pg_conn
+
+def init_db():
+    if not _DATABASE_URL:
+        print("[DB] No DATABASE_URL — using disk persistence")
+        return
+    try:
+        conn = _get_pg()
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS jobs (
+                    id TEXT PRIMARY KEY,
+                    data JSONB NOT NULL,
+                    updated_at BIGINT NOT NULL
+                )
+            """)
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS render_jobs (
+                    id TEXT PRIMARY KEY,
+                    data JSONB NOT NULL,
+                    updated_at BIGINT NOT NULL
+                )
+            """)
+        print("[DB] PostgreSQL tables ready")
+    except Exception as e:
+        print(f"[DB] init_db error: {e}")
+
 # ── Job State ─────────────────────────────────────────────────────────────
 def save_job(job_id: str, data: dict):
+    if _DATABASE_URL:
+        try:
+            conn = _get_pg()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO jobs (id, data, updated_at)
+                       VALUES (%s, %s::jsonb, %s)
+                       ON CONFLICT (id) DO UPDATE
+                       SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at""",
+                    (job_id, json.dumps(data, ensure_ascii=False), int(time.time()))
+                )
+            return
+        except Exception as e:
+            print(f"[DB] save_job pg error: {e} — falling back to disk")
+    # disk fallback
     with open(JOBS_DIR / f"{job_id}.json", "w") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def load_job(job_id: str) -> dict:
+    if _DATABASE_URL:
+        try:
+            conn = _get_pg()
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM jobs WHERE id = %s", (job_id,))
+                row = cur.fetchone()
+            if row:
+                return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+            raise HTTPException(404, "Job not found")
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"[DB] load_job pg error: {e} — falling back to disk")
+    # disk fallback
     p = JOBS_DIR / f"{job_id}.json"
     if not p.exists():
         raise HTTPException(404, "Job not found")
@@ -121,6 +188,8 @@ def update_job(job_id: str, **kwargs):
     data = load_job(job_id)
     data.update(kwargs)
     save_job(job_id, data)
+
+init_db()
 
 # ── Video Analysis ────────────────────────────────────────────────────────
 
@@ -627,14 +696,40 @@ async def get_job(job_id: str):
     return load_job(job_id)
 
 
-render_jobs: dict = {}  # render_id -> {status, url, error}
+render_jobs: dict = {}  # render_id -> {status, url, error}  (in-memory cache)
 
 def save_render_job(render_id: str, data: dict):
-    """Persist render state to disk so it survives restarts."""
+    if _DATABASE_URL:
+        try:
+            conn = _get_pg()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO render_jobs (id, data, updated_at)
+                       VALUES (%s, %s::jsonb, %s)
+                       ON CONFLICT (id) DO UPDATE
+                       SET data = EXCLUDED.data, updated_at = EXCLUDED.updated_at""",
+                    (render_id, json.dumps(data, ensure_ascii=False), int(time.time()))
+                )
+            return
+        except Exception as e:
+            print(f"[DB] save_render_job pg error: {e} — falling back to disk")
+    # disk fallback
     with open(JOBS_DIR / f"render_{render_id}.json", "w") as f:
         json.dump(data, f)
 
 def load_render_job(render_id: str) -> dict | None:
+    if _DATABASE_URL:
+        try:
+            conn = _get_pg()
+            with conn.cursor() as cur:
+                cur.execute("SELECT data FROM render_jobs WHERE id = %s", (render_id,))
+                row = cur.fetchone()
+            if row:
+                return row[0] if isinstance(row[0], dict) else json.loads(row[0])
+            return render_jobs.get(render_id)
+        except Exception as e:
+            print(f"[DB] load_render_job pg error: {e} — falling back to disk")
+    # disk fallback
     p = JOBS_DIR / f"render_{render_id}.json"
     if not p.exists():
         return render_jobs.get(render_id)
@@ -642,7 +737,7 @@ def load_render_job(render_id: str) -> dict | None:
         return json.load(f)
 
 def set_render_state(render_id: str, data: dict):
-    render_jobs[render_id] = data
+    render_jobs[render_id] = data  # keep in-memory cache too
     save_render_job(render_id, data)
 
 async def do_render_background(render_id: str, config: RenderConfig, job: dict):
