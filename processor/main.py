@@ -745,17 +745,42 @@ async def download_and_process(job_id: str, url: str, video_path: Path):
 
 def _yt_download(job_id: str, url: str, video_path: Path):
     import subprocess as sp
-    cmd = [
+
+    # Cookies file path (optional — mount via env var)
+    cookies_file = os.environ.get("YT_COOKIES_FILE", "")
+
+    base_cmd = [
         "yt-dlp",
         "--no-playlist",
         "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
         "--merge-output-format", "mp4",
+        "--extractor-args", "youtube:player_client=web,mweb",
+        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "--sleep-interval", "2",
         "-o", str(video_path),
-        url,
     ]
+
+    if cookies_file and Path(cookies_file).exists():
+        base_cmd += ["--cookies", cookies_file]
+
+    cmd = base_cmd + [url]
     result = sp.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"yt-dlp falló: {result.stderr[-500:]}")
+        # Retry with android client on failure
+        cmd2 = [
+            "yt-dlp",
+            "--no-playlist",
+            "-f", "best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "--extractor-args", "youtube:player_client=android",
+            "-o", str(video_path),
+            url,
+        ]
+        if cookies_file and Path(cookies_file).exists():
+            cmd2 += ["--cookies", cookies_file]
+        result2 = sp.run(cmd2, capture_output=True, text=True)
+        if result2.returncode != 0:
+            raise RuntimeError(f"yt-dlp falló: {result2.stderr[-800:]}")
     if not video_path.exists():
         raise RuntimeError("yt-dlp no generó el archivo de video")
 
