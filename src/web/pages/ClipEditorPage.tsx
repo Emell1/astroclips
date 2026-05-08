@@ -167,6 +167,7 @@ export default function ClipEditorPage() {
   const [downloadUrl, setDownloadUrl] = useState("")
   const [error, setError] = useState("")
   const [frameUrl, setFrameUrl] = useState("")
+  const [frameBlobUrl, setFrameBlobUrl] = useState("")
   const canvasRef = useRef<HTMLDivElement>(null)
   const [displayW, setDisplayW] = useState(320)
   const displayH = displayW * (CANVAS_H / CANVAS_W) // 9:16
@@ -200,7 +201,13 @@ export default function ClipEditorPage() {
       const c: Clip = job.clips[Number(index)]
       setClip(c)
       const t = Math.round(c.start + (c.end - c.start) / 2)
-      setFrameUrl(`/api/processor/api/frame/${id}?t=${t}`)
+      const frameApiUrl = `/api/processor/api/frame/${id}?t=${t}`
+      setFrameUrl(frameApiUrl)
+      // Fetch frame with auth token → blob URL so <img> works
+      processorFetch(`/api/frame/${id}?t=${t}`)
+        .then(r => r.ok ? r.blob() : null)
+        .then(blob => { if (blob) setFrameBlobUrl(URL.createObjectURL(blob)) })
+        .catch(() => {})
       if (c?.visual) {
         const v = c.visual
         const pad = 80
@@ -334,16 +341,20 @@ export default function ClipEditorPage() {
             onClick={() => setActiveLayer(null)}
           >
             {/* Background frame */}
-            {frameUrl && (
+            {frameBlobUrl && (
               <img
-                src={frameUrl}
+                src={frameBlobUrl}
                 alt=""
-                onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
                 style={{
                   position: "absolute", inset: 0, width: "100%", height: "100%",
                   objectFit: "cover", opacity: 0.5, pointerEvents: "none"
                 }}
               />
+            )}
+            {!frameBlobUrl && frameUrl && (
+              <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                <span style={{ color: "#55556a", fontSize: 12 }}>Cargando frame...</span>
+              </div>
             )}
 
             {/* Layers */}
@@ -351,7 +362,7 @@ export default function ClipEditorPage() {
               <LayerBox
                 key={lid}
                 layer={layers[lid]}
-                frameUrl={lid !== "logo" ? frameUrl : ""}
+                frameUrl={lid !== "logo" ? frameBlobUrl : ""}
                 color={color}
                 label={label}
                 displayW={displayW}
