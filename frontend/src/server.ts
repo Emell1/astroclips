@@ -21,6 +21,28 @@ const sql = postgres(DATABASE_URL, { ssl: "require" });
 const db = drizzle(sql);
 
 const app = express();
+
+// ── Processor proxy (BEFORE body parser so body stream is intact) ──────────
+app.use("/api/processor", async (req: any, res, next) => {
+  if (!PROCESSOR_URL) return res.status(503).json({ error: "Processor not configured" });
+  // Auth check inline (can't use requireAuth before body is parsed for json routes,
+  // but token is in header so it's fine)
+  const token = req.headers.authorization?.replace("Bearer ", "") || req.cookies?.session;
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+  try {
+    const { jwtVerify: verify } = await import("jose");
+    const { payload } = await verify(token, new TextEncoder().encode(JWT_SECRET));
+    if (!payload.sub) return res.status(401).json({ error: "Invalid token" });
+  } catch {
+    return res.status(401).json({ error: "Invalid token" });
+  }
+  next();
+}, createProxyMiddleware({
+  target: PROCESSOR_URL,
+  changeOrigin: true,
+  pathRewrite: { "^/api/processor": "" },
+}));
+
 app.use(express.json());
 
 // Serve static assets
@@ -121,16 +143,7 @@ app.post("/api/setup", async (req, res) => {
   res.json({ ok: true });
 });
 
-// ── Processor proxy ───────────────────────────────────────────────────────
 
-app.use("/api/processor", requireAuth, (req: any, res, next) => {
-  if (!PROCESSOR_URL) return res.status(503).json({ error: "Processor not configured" });
-  next();
-}, createProxyMiddleware({
-  target: PROCESSOR_URL,
-  changeOrigin: true,
-  pathRewrite: { "^/api/processor": "" },
-}));
 
 app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
