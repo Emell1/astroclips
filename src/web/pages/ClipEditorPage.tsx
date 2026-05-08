@@ -164,12 +164,14 @@ export default function ClipEditorPage() {
   const [, nav] = useLocation()
   const [clip, setClip] = useState<Clip | null>(null)
   const [rendering, setRendering] = useState(false)
+  const [renderSecs, setRenderSecs] = useState(0)
   const [downloadUrl, setDownloadUrl] = useState("")
   const [error, setError] = useState("")
   const [frameUrl, setFrameUrl] = useState("")
   const [frameBlobUrl, setFrameBlobUrl] = useState("")
   const canvasRef = useRef<HTMLDivElement>(null)
-  const [displayW, setDisplayW] = useState(320)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [displayW, setDisplayW] = useState(270)
   const displayH = displayW * (CANVAS_H / CANVAS_W) // 9:16
 
   const origW = clip?.visual?.orig_w || 1920
@@ -185,10 +187,13 @@ export default function ClipEditorPage() {
 
   const { startDrag } = useLayerDrag(canvasRef, layers, setLayers, displayW, displayH)
 
-  // Measure canvas width
+  // Measure canvas width — fixed 9:16, max 320px wide
   useEffect(() => {
     const update = () => {
-      if (canvasRef.current) setDisplayW(canvasRef.current.offsetWidth)
+      if (containerRef.current) {
+        const maxW = Math.min(containerRef.current.offsetWidth, 320)
+        setDisplayW(maxW)
+      }
     }
     update()
     window.addEventListener("resize", update)
@@ -227,7 +232,8 @@ export default function ClipEditorPage() {
 
   const handleRender = async () => {
     if (!clip) return
-    setRendering(true); setError(""); setDownloadUrl("")
+    setRendering(true); setError(""); setDownloadUrl(""); setRenderSecs(0)
+    const timer = setInterval(() => setRenderSecs(s => s + 1), 1000)
     try {
       const face = layers.face
       const diag = layers.diag
@@ -268,6 +274,7 @@ export default function ClipEditorPage() {
     } catch (e: any) {
       setError(e.message || "Error al renderizar")
     } finally {
+      clearInterval(timer)
       setRendering(false)
     }
   }
@@ -322,21 +329,23 @@ export default function ClipEditorPage() {
         </div>
 
         {/* 9:16 Canvas */}
-        <div style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
+        <div ref={containerRef} style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
           <div style={{ padding: "8px 12px", borderBottom: "1px solid #1a1a26" }}>
             <span style={{ color: "#55556a", fontSize: 11, fontFamily: "JetBrains Mono" }}>
               ARRASTRA Y REDIMENSIONA CADA CAPA · 9:16
             </span>
           </div>
+          <div style={{ display: "flex", justifyContent: "center", background: "#0a0a0f", padding: "8px 0" }}>
           <div
             ref={canvasRef}
             style={{
               position: "relative",
-              width: "100%",
+              width: displayW,
               height: displayH,
               background: "#000",
               overflow: "hidden",
               touchAction: "none",
+              flexShrink: 0,
             }}
             onClick={() => setActiveLayer(null)}
           >
@@ -414,6 +423,7 @@ export default function ClipEditorPage() {
               )
             })()}
           </div>
+          </div>
         </div>
 
         {/* Logo opacity */}
@@ -451,8 +461,13 @@ export default function ClipEditorPage() {
           cursor: rendering ? "not-allowed" : "pointer",
           fontWeight: 700, fontSize: 16, width: "100%", marginBottom: 10
         }}>
-          {rendering ? "⏳ Renderizando..." : "🎬 Generar clip"}
+          {rendering ? `⏳ Renderizando... ${renderSecs}s` : "🎬 Generar clip"}
         </button>
+        {rendering && (
+          <p style={{ color: "#55556a", fontSize: 12, textAlign: "center", margin: "0 0 10px" }}>
+            Un clip de {Math.round(clip.end - clip.start)}s tarda ~{Math.round((clip.end - clip.start) * 0.5)}s. No cierres la página.
+          </p>
+        )}
 
         {error && (
           <p style={{ color: "#ef4444", fontSize: 13, textAlign: "center", marginBottom: 10 }}>⚠ {error}</p>
