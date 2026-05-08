@@ -22,15 +22,12 @@ const app = express();
 app.use("/api/processor", async (req, res, next) => {
     if (!PROCESSOR_URL)
         return res.status(503).json({ error: "Processor not configured" });
-    // Auth check inline (can't use requireAuth before body is parsed for json routes,
-    // but token is in header so it's fine)
     const token = req.headers.authorization?.replace("Bearer ", "") || req.cookies?.session;
     if (!token)
         return res.status(401).json({ error: "Unauthorized" });
     try {
-        const { jwtVerify: verify } = await import("jose");
-        const { payload } = await verify(token, new TextEncoder().encode(JWT_SECRET));
-        if (!payload.sub)
+        const { payload } = await jwtVerify(token, new TextEncoder().encode(JWT_SECRET));
+        if (!payload.userId)
             return res.status(401).json({ error: "Invalid token" });
     }
     catch {
