@@ -404,6 +404,9 @@ class RenderConfig(BaseModel):
     logo_size: int = 130
     logo_x: str = "right"
     logo_y: str = "top"
+    # Override clip timing (skip clips[] lookup)
+    clip_start: Optional[float] = None
+    clip_end: Optional[float] = None
 
 
 def render_clip(video_path: str, start: float, duration: float,
@@ -645,18 +648,34 @@ def set_render_state(render_id: str, data: dict):
 async def do_render_background(render_id: str, config: RenderConfig, job: dict):
     try:
         set_render_state(render_id, {"status": "rendering"})
+        print(f"[RENDER] {render_id} starting...")
+
         video_path = ensure_video_local(config.job_id, job)
-        clips = job.get("clips", [])
-        clip = clips[config.clip_index]
-        start = clip["start"]
-        duration = clip["end"] - clip["start"]
+        print(f"[RENDER] video_path={video_path} exists={Path(video_path).exists()}")
+
+        # Timing: use explicit override or fall back to clips[]
+        if config.clip_start is not None and config.clip_end is not None:
+            start = config.clip_start
+            duration = config.clip_end - config.clip_start
+        else:
+            clips = job.get("clips", [])
+            clip = clips[config.clip_index]
+            start = clip["start"]
+            duration = clip["end"] - clip["start"]
+
+        print(f"[RENDER] start={start} duration={duration}")
         out_name = f"{config.job_id}_clip{config.clip_index}.mp4"
         output_path = OUTPUTS_DIR / out_name
 
+        import time as _time
+        t0 = _time.time()
         loop = asyncio.get_event_loop()
         success = await loop.run_in_executor(
             None, render_clip, str(video_path), start, duration, config, output_path
         )
+        elapsed = _time.time() - t0
+        print(f"[RENDER] ffmpeg done in {elapsed:.1f}s success={success}")
+
         if not success:
             set_render_state(render_id, {"status": "error", "error": "ffmpeg falló"})
             return
@@ -664,11 +683,15 @@ async def do_render_background(render_id: str, config: RenderConfig, job: dict):
         if R2_ENABLED:
             try:
                 await loop.run_in_executor(None, r2_upload, output_path, f"outputs/{out_name}")
+                print(f"[RENDER] uploaded to R2: outputs/{out_name}")
             except Exception as e:
                 print(f"[R2] output upload error (non-fatal): {e}")
 
         set_render_state(render_id, {"status": "done", "url": f"/api/download/{out_name}", "filename": out_name})
+        print(f"[RENDER] {render_id} DONE")
     except Exception as e:
+        import traceback
+        print(f"[RENDER] ERROR: {e}\n{traceback.format_exc()}")
         set_render_state(render_id, {"status": "error", "error": str(e)})
 
 
