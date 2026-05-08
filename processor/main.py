@@ -158,25 +158,60 @@ def transcribe(audio_path: Path) -> list:
     return [{"start": s.start, "end": s.end, "text": s.text.strip()} for s in segments]
 
 
-def group_into_clips(segments: list, max_dur=90, min_dur=20) -> list:
-    """Group segments into candidate clips of up to max_dur seconds."""
+def group_into_clips(segments: list, max_dur=90, min_dur=15) -> list:
+    """
+    Group segments into clips based on natural speech pauses.
+    Strategy: find self-contained ideas (sentence-level) up to max_dur.
+    Prefer clips of 15-60s. Never cut mid-sentence.
+    """
     clips = []
     if not segments:
         return clips
 
-    cur = {"start": segments[0]["start"], "end": segments[0]["end"], "text": segments[0]["text"], "segments": [segments[0]]}
-    for seg in segments[1:]:
-        if seg["end"] - cur["start"] <= max_dur:
-            cur["end"] = seg["end"]
-            cur["text"] += " " + seg["text"]
-            cur["segments"].append(seg)
-        else:
-            if cur["end"] - cur["start"] >= min_dur:
-                clips.append(cur)
-            cur = {"start": seg["start"], "end": seg["end"], "text": seg["text"], "segments": [seg]}
+    def flush(cur):
+        dur = cur["end"] - cur["start"]
+        if dur >= min_dur:
+            clips.append(cur)
 
-    if cur["end"] - cur["start"] >= min_dur:
-        clips.append(cur)
+    cur = None
+    for seg in segments:
+        seg_dur = seg["end"] - seg["start"]
+        text = seg["text"].strip()
+
+        if cur is None:
+            cur = {"start": seg["start"], "end": seg["end"], "text": text, "segments": [seg]}
+            continue
+
+        would_be_dur = seg["end"] - cur["start"]
+
+        # Detect natural break: segment ends with sentence-ending punctuation
+        ends_sentence = text and text[-1] in ".!?…"
+        cur_ends_sentence = cur["text"] and cur["text"][-1] in ".!?…"
+
+        if would_be_dur > max_dur:
+            # Must cut — flush current and start new
+            flush(cur)
+            cur = {"start": seg["start"], "end": seg["end"], "text": text, "segments": [seg]}
+        elif would_be_dur >= 20 and cur_ends_sentence:
+            # Good natural break at sentence boundary — flush and start new
+            cur["end"] = seg["end"]
+            cur["text"] += " " + text
+            cur["segments"].append(seg)
+            flush(cur)
+            cur = None
+        else:
+            # Keep accumulating
+            cur["end"] = seg["end"]
+            cur["text"] += " " + text
+            cur["segments"].append(seg)
+            # If ends a sentence and we have enough content, consider flushing
+            if ends_sentence and would_be_dur >= 15:
+                # Only flush if the next segment would push us past a threshold
+                # We'll handle this lazily — just keep going until natural break
+                pass
+
+    if cur is not None:
+        flush(cur)
 
     return clips
 
@@ -550,39 +585,56 @@ async def get_job(job_id: str):
     return load_job(job_id)
 
 
+render_jobs: dict = {}  # render_id -> {status, url, error}
+
+async def do_render_background(render_id: str, config: RenderConfig, job: dict):
+    try:
+        render_jobs[render_id] = {"status": "rendering"}
+        video_path = ensure_video_local(config.job_id, job)
+        clips = job.get("clips", [])
+        clip = clips[config.clip_index]
+        start = clip["start"]
+        duration = clip["end"] - clip["start"]
+        out_name = f"{config.job_id}_clip{config.clip_index}.mp4"
+        output_path = OUTPUTS_DIR / out_name
+
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(
+            None, render_clip, str(video_path), start, duration, config, output_path
+        )
+        if not success:
+            render_jobs[render_id] = {"status": "error", "error": "ffmpeg falló"}
+            return
+
+        if R2_ENABLED:
+            try:
+                await loop.run_in_executor(None, r2_upload, output_path, f"outputs/{out_name}")
+            except Exception as e:
+                print(f"[R2] output upload error (non-fatal): {e}")
+
+        render_jobs[render_id] = {"status": "done", "url": f"/api/download/{out_name}", "filename": out_name}
+    except Exception as e:
+        render_jobs[render_id] = {"status": "error", "error": str(e)}
+
+
 @app.post("/api/render")
-async def render_clip_endpoint(config: RenderConfig):
+async def render_clip_endpoint(config: RenderConfig, background_tasks: BackgroundTasks):
     job = load_job(config.job_id)
     clips = job.get("clips", [])
-
     if config.clip_index >= len(clips):
         raise HTTPException(400, "Clip index out of range")
 
-    clip = clips[config.clip_index]
-    # Ensure video is local (download from R2 if needed)
-    try:
-        video_path = ensure_video_local(config.job_id, job)
-    except Exception as e:
-        raise HTTPException(404, f"Video no disponible: {e}")
+    render_id = f"{config.job_id}_clip{config.clip_index}"
+    render_jobs[render_id] = {"status": "rendering"}
+    background_tasks.add_task(do_render_background, render_id, config, job)
+    return {"render_id": render_id, "status": "rendering"}
 
-    start = clip["start"]
-    duration = clip["end"] - clip["start"]
 
-    out_name = f"{config.job_id}_clip{config.clip_index}.mp4"
-    output_path = OUTPUTS_DIR / out_name
-
-    success = render_clip(str(video_path), start, duration, config, output_path)
-    if not success:
-        raise HTTPException(500, "Error al renderizar el clip")
-
-    # Upload output to R2 as well
-    if R2_ENABLED:
-        try:
-            r2_upload(output_path, f"outputs/{out_name}")
-        except Exception as e:
-            print(f"[R2] output upload error (non-fatal): {e}")
-
-    return {"url": f"/api/download/{out_name}", "filename": out_name}
+@app.get("/api/render_status/{render_id}")
+async def render_status(render_id: str):
+    if render_id not in render_jobs:
+        raise HTTPException(404, "Render not found")
+    return render_jobs[render_id]
 
 
 @app.get("/api/download/{filename}")

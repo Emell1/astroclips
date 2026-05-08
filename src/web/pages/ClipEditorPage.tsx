@@ -239,23 +239,18 @@ export default function ClipEditorPage() {
       const diag = layers.diag
       const logo = layers.logo
 
-      // Convert 0..1 canvas coords to ffmpeg filter params
       const config = {
         job_id: id,
         clip_index: Number(index),
-        // Face layer
         face_crop_x: face.srcX, face_crop_y: face.srcY, face_crop_w: face.srcW, face_crop_h: face.srcH,
         face_dst_x: face.x, face_dst_y: face.y, face_dst_w: face.w, face_dst_h: face.h,
         face_visible: face.visible,
-        // Diagram layer
         diagram_crop_x: diag.srcX, diagram_crop_y: diag.srcY, diagram_crop_w: diag.srcW, diagram_crop_h: diag.srcH,
         diagram_dst_x: diag.x, diagram_dst_y: diag.y, diagram_dst_w: diag.w, diagram_dst_h: diag.h,
         diagram_visible: diag.visible,
-        // Logo layer
         logo_dst_x: logo.x, logo_dst_y: logo.y, logo_dst_w: logo.w,
         logo_visible: logo.visible,
         logo_opacity: logoOpacity,
-        // Legacy compat
         layout: diag.visible ? "split" : "face_only",
         show_logo: logo.visible,
         logo_size: Math.round(logo.w * CANVAS_W),
@@ -263,14 +258,32 @@ export default function ClipEditorPage() {
         logo_y: logo.y < 0.4 ? "top" : "bottom",
       }
 
+      // Start render (returns immediately)
       const r = await processorFetch(`/api/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(config),
       })
       if (!r.ok) throw new Error(await r.text())
-      const data = await r.json()
-      setDownloadUrl(`/api/processor${data.url}`)
+      const { render_id } = await r.json()
+
+      // Poll status every 3s
+      await new Promise<void>((resolve, reject) => {
+        const poll = setInterval(async () => {
+          try {
+            const sr = await processorFetch(`/api/render_status/${render_id}`)
+            const st = await sr.json()
+            if (st.status === "done") {
+              clearInterval(poll)
+              setDownloadUrl(`/api/processor${st.url}`)
+              resolve()
+            } else if (st.status === "error") {
+              clearInterval(poll)
+              reject(new Error(st.error || "Error al renderizar"))
+            }
+          } catch (e) { clearInterval(poll); reject(e) }
+        }, 3000)
+      })
     } catch (e: any) {
       setError(e.message || "Error al renderizar")
     } finally {
