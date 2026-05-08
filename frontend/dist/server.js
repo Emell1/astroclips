@@ -1,6 +1,7 @@
 import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createProxyMiddleware } from "http-proxy-middleware";
 import { SignJWT, jwtVerify } from "jose";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { eq } from "drizzle-orm";
@@ -113,36 +114,15 @@ app.post("/api/setup", async (req, res) => {
     res.json({ ok: true });
 });
 // ── Processor proxy ───────────────────────────────────────────────────────
-app.all("/api/processor/*", requireAuth, async (req, res) => {
+app.use("/api/processor", requireAuth, (req, res, next) => {
     if (!PROCESSOR_URL)
         return res.status(503).json({ error: "Processor not configured" });
-    const proxyPath = req.path.replace("/api/processor", "");
-    const url = `${PROCESSOR_URL}${proxyPath}`;
-    try {
-        const chunks = [];
-        req.on("data", (chunk) => chunks.push(chunk));
-        req.on("end", async () => {
-            const body = Buffer.concat(chunks);
-            const headers = {};
-            if (req.headers["content-type"])
-                headers["content-type"] = req.headers["content-type"];
-            const fetchRes = await fetch(url, {
-                method: req.method,
-                headers,
-                body: body.length > 0 ? body : undefined,
-            });
-            res.status(fetchRes.status);
-            const ct = fetchRes.headers.get("content-type");
-            if (ct)
-                res.setHeader("content-type", ct);
-            const buf = await fetchRes.arrayBuffer();
-            res.send(Buffer.from(buf));
-        });
-    }
-    catch (e) {
-        res.status(502).json({ error: `Processor error: ${e.message}` });
-    }
-});
+    next();
+}, createProxyMiddleware({
+    target: PROCESSOR_URL,
+    changeOrigin: true,
+    pathRewrite: { "^/api/processor": "" },
+}));
 app.get("/api/ping", (_req, res) => res.json({ ok: true, ts: Date.now() }));
 // ── SPA fallback ──────────────────────────────────────────────────────────
 app.get("/*", (_req, res) => {
