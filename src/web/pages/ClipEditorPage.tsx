@@ -335,10 +335,15 @@ export default function ClipEditorPage() {
           >
             {/* Background frame */}
             {frameUrl && (
-              <img src={frameUrl} alt="" style={{
-                position: "absolute", inset: 0, width: "100%", height: "100%",
-                objectFit: "cover", opacity: 0.15, pointerEvents: "none"
-              }} />
+              <img
+                src={frameUrl}
+                alt=""
+                onError={(e) => { (e.target as HTMLImageElement).style.display = "none" }}
+                style={{
+                  position: "absolute", inset: 0, width: "100%", height: "100%",
+                  objectFit: "cover", opacity: 0.5, pointerEvents: "none"
+                }}
+              />
             )}
 
             {/* Layers */}
