@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react"
 import { useLocation } from "wouter"
 
-import { getToken } from "../lib/auth"
+import { getToken, processorFetch } from "../lib/auth"
 
 export default function UploadPage() {
   const [, nav] = useLocation()
@@ -63,13 +63,9 @@ export default function UploadPage() {
     setLoadingUrl(true)
     setError("")
     try {
-      const token = getToken()
-      const res = await fetch("/api/processor/api/upload-url", {
+      const res = await processorFetch("/api/upload-url", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: youtubeUrl.trim() }),
       })
       if (!res.ok) throw new Error(await res.text())
