@@ -408,11 +408,11 @@ class RenderConfig(BaseModel):
 
 def render_clip(video_path: str, start: float, duration: float,
                 config: RenderConfig, output_path: Path) -> bool:
-    """Render using canvas-based layout: each layer has src crop + dst position on 720x1280."""
+    """Render using scale+pad approach — no color=black canvas generator (too slow on CPU)."""
     vp = Path(video_path)
     logo_path = str(LOGO_PATH) if LOGO_PATH.exists() else None
 
-    W, H = 720, 1280  # output canvas — 720p for speed, still looks great on mobile
+    W, H = 720, 1280
 
     filters = []
     inputs = ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", str(vp)]
@@ -422,26 +422,43 @@ def render_clip(video_path: str, start: float, duration: float,
         inputs += ["-i", logo_path]
         logo_input_idx = 1
 
-    # Black canvas base
-    filters.append(f"color=black:{W}x{H}:r=30[canvas]")
-    current = "canvas"
+    # ── Build base stream ──
+    # Strategy: the face layer (or diagram if no face) becomes the base via scale+pad.
+    # Additional layers are overlaid on top.
+    # This avoids the slow `color=black` canvas source.
 
-    # ── Face layer ──
+    base_built = False
+    current = None
+
+    # ── Face layer → base ──
     if config.face_visible:
         fx, fy = config.face_crop_x, config.face_crop_y
         fw, fh = config.face_crop_w, config.face_crop_h
-        # dest in pixels
         dx = int(config.face_dst_x * W)
         dy = int(config.face_dst_y * H)
         dw = int(config.face_dst_w * W)
         dh = int(config.face_dst_h * H)
-        filters.append(
-            f"[0:v]crop={fw}:{fh}:{fx}:{fy},"
-            f"scale={dw}:{dh}:force_original_aspect_ratio=decrease,"
-            f"pad={dw}:{dh}:(ow-iw)/2:(oh-ih)/2:black[face_l]"
-        )
-        filters.append(f"[{current}][face_l]overlay={dx}:{dy}[after_face]")
-        current = "after_face"
+        # Ensure even dimensions
+        dw = dw + (dw % 2)
+        dh = dh + (dh % 2)
+
+        if dx == 0 and dy == 0 and dw == W and dh == H:
+            # Fills the whole canvas — just crop+scale+pad directly
+            filters.append(
+                f"[0:v]crop={fw}:{fh}:{fx}:{fy},"
+                f"scale={W}:{H}:force_original_aspect_ratio=decrease,"
+                f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black[base]"
+            )
+        else:
+            # Partial placement: crop+scale to dest size, then pad to full canvas with black
+            filters.append(
+                f"[0:v]crop={fw}:{fh}:{fx}:{fy},"
+                f"scale={dw}:{dh}:force_original_aspect_ratio=decrease,"
+                f"pad={dw}:{dh}:(ow-iw)/2:(oh-ih)/2:black,"
+                f"pad={W}:{H}:{dx}:{dy}:black[base]"
+            )
+        current = "base"
+        base_built = True
 
     # ── Diagram layer ──
     if config.diagram_visible and config.diagram_crop_w:
@@ -449,21 +466,42 @@ def render_clip(video_path: str, start: float, duration: float,
         dy2 = int(config.diagram_dst_y * H)
         dw2 = int(config.diagram_dst_w * W)
         dh2 = int(config.diagram_dst_h * H)
+        dw2 = dw2 + (dw2 % 2)
+        dh2 = dh2 + (dh2 % 2)
+
         filters.append(
             f"[0:v]crop={config.diagram_crop_w}:{config.diagram_crop_h}:{config.diagram_crop_x}:{config.diagram_crop_y},"
             f"scale={dw2}:{dh2}:force_original_aspect_ratio=decrease,"
             f"pad={dw2}:{dh2}:(ow-iw)/2:(oh-ih)/2:black[diag_l]"
         )
-        filters.append(f"[{current}][diag_l]overlay={dx2}:{dy2}[after_diag]")
-        current = "after_diag"
+
+        if not base_built:
+            # Diagram is the base — pad it to full canvas
+            filters.append(
+                f"[diag_l]pad={W}:{H}:{dx2}:{dy2}:black[base]"
+            )
+            current = "base"
+            base_built = True
+        else:
+            filters.append(f"[{current}][diag_l]overlay={dx2}:{dy2}[after_diag]")
+            current = "after_diag"
+
+    # ── If nothing visible, just scale the raw video to canvas ──
+    if not base_built:
+        filters.append(
+            f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease,"
+            f"pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black[base]"
+        )
+        current = "base"
 
     # ── Logo layer ──
     if logo_path and config.logo_visible and logo_input_idx is not None:
         lx = int(config.logo_dst_x * W)
         ly = int(config.logo_dst_y * H)
         lw = int(config.logo_dst_w * W)
+        lw = lw + (lw % 2)
         filters.append(
-            f"[{logo_input_idx}:v]scale={lw}:-1,"
+            f"[{logo_input_idx}:v]scale={lw}:-2,"
             f"format=rgba,colorchannelmixer=aa={config.logo_opacity}[logo_l]"
         )
         filters.append(f"[{current}][logo_l]overlay={lx}:{ly}[after_logo]")
@@ -681,6 +719,13 @@ async def get_frame(job_id: str, t: float = 0):
     if not frame_path.exists():
         raise HTTPException(404, "Frame not found")
     return FileResponse(str(frame_path), media_type="image/jpeg")
+
+
+@app.get("/api/logo")
+async def get_logo():
+    if not LOGO_PATH.exists():
+        raise HTTPException(404, "Logo not found")
+    return FileResponse(str(LOGO_PATH), media_type="image/jpeg")
 
 
 @app.get("/api/health")

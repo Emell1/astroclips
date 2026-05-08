@@ -169,6 +169,7 @@ export default function ClipEditorPage() {
   const [error, setError] = useState("")
   const [frameUrl, setFrameUrl] = useState("")
   const [frameBlobUrl, setFrameBlobUrl] = useState("")
+  const [logoBlobUrl, setLogoBlobUrl] = useState("")
   const canvasRef = useRef<HTMLDivElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
   const [displayW, setDisplayW] = useState(270)
@@ -212,6 +213,10 @@ export default function ClipEditorPage() {
       processorFetch(`/api/frame/${id}?t=${t}`)
         .then(r => r.ok ? r.blob() : null)
         .then(blob => { if (blob) setFrameBlobUrl(URL.createObjectURL(blob)) })
+        .catch(() => {})
+      processorFetch(`/api/logo`)
+        .then(r => r.ok ? r.blob() : null)
+        .then(blob => { if (blob) setLogoBlobUrl(URL.createObjectURL(blob)) })
         .catch(() => {})
       if (c?.visual) {
         const v = c.visual
@@ -419,7 +424,10 @@ export default function ClipEditorPage() {
                     onMouseDown={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
                     onTouchStart={e => { setActiveLayer("logo"); startDrag(e, "logo", "move") }}
                   >
-                    <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, pointerEvents: "none" }}>LOGO</span>
+                    {logoBlobUrl
+                      ? <img src={logoBlobUrl} style={{ width: "100%", height: "100%", objectFit: "contain", pointerEvents: "none", opacity: logoOpacity }} />
+                      : <span style={{ fontSize: 10, color: "#10b981", fontWeight: 700, pointerEvents: "none" }}>LOGO</span>
+                    }
                   </div>
                   {handles.map(({ h, cx, cy }) => (
                     <div key={h} style={{
