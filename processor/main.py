@@ -408,11 +408,11 @@ class RenderConfig(BaseModel):
 
 def render_clip(video_path: str, start: float, duration: float,
                 config: RenderConfig, output_path: Path) -> bool:
-    """Render using canvas-based layout: each layer has src crop + dst position on 1080x1920."""
+    """Render using canvas-based layout: each layer has src crop + dst position on 720x1280."""
     vp = Path(video_path)
     logo_path = str(LOGO_PATH) if LOGO_PATH.exists() else None
 
-    W, H = 1080, 1920  # output canvas
+    W, H = 720, 1280  # output canvas — 720p for speed, still looks great on mobile
 
     filters = []
     inputs = ["ffmpeg", "-y", "-ss", str(start), "-t", str(duration), "-i", str(vp)]
@@ -474,8 +474,9 @@ def render_clip(video_path: str, start: float, duration: float,
     cmd = inputs + [
         "-filter_complex", filter_complex,
         "-map", f"[{current}]", "-map", "0:a",
-        "-c:v", "libx264", "-crf", "23", "-preset", "ultrafast",
-        "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart",
+        "-c:v", "libx264", "-crf", "26", "-preset", "ultrafast",
+        "-tune", "fastdecode",
+        "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
         str(output_path)
     ]
 
@@ -587,9 +588,25 @@ async def get_job(job_id: str):
 
 render_jobs: dict = {}  # render_id -> {status, url, error}
 
+def save_render_job(render_id: str, data: dict):
+    """Persist render state to disk so it survives restarts."""
+    with open(JOBS_DIR / f"render_{render_id}.json", "w") as f:
+        json.dump(data, f)
+
+def load_render_job(render_id: str) -> dict | None:
+    p = JOBS_DIR / f"render_{render_id}.json"
+    if not p.exists():
+        return render_jobs.get(render_id)
+    with open(p) as f:
+        return json.load(f)
+
+def set_render_state(render_id: str, data: dict):
+    render_jobs[render_id] = data
+    save_render_job(render_id, data)
+
 async def do_render_background(render_id: str, config: RenderConfig, job: dict):
     try:
-        render_jobs[render_id] = {"status": "rendering"}
+        set_render_state(render_id, {"status": "rendering"})
         video_path = ensure_video_local(config.job_id, job)
         clips = job.get("clips", [])
         clip = clips[config.clip_index]
@@ -603,7 +620,7 @@ async def do_render_background(render_id: str, config: RenderConfig, job: dict):
             None, render_clip, str(video_path), start, duration, config, output_path
         )
         if not success:
-            render_jobs[render_id] = {"status": "error", "error": "ffmpeg falló"}
+            set_render_state(render_id, {"status": "error", "error": "ffmpeg falló"})
             return
 
         if R2_ENABLED:
@@ -612,9 +629,9 @@ async def do_render_background(render_id: str, config: RenderConfig, job: dict):
             except Exception as e:
                 print(f"[R2] output upload error (non-fatal): {e}")
 
-        render_jobs[render_id] = {"status": "done", "url": f"/api/download/{out_name}", "filename": out_name}
+        set_render_state(render_id, {"status": "done", "url": f"/api/download/{out_name}", "filename": out_name})
     except Exception as e:
-        render_jobs[render_id] = {"status": "error", "error": str(e)}
+        set_render_state(render_id, {"status": "error", "error": str(e)})
 
 
 @app.post("/api/render")
@@ -632,9 +649,10 @@ async def render_clip_endpoint(config: RenderConfig, background_tasks: Backgroun
 
 @app.get("/api/render_status/{render_id}")
 async def render_status(render_id: str):
-    if render_id not in render_jobs:
+    state = load_render_job(render_id)
+    if state is None:
         raise HTTPException(404, "Render not found")
-    return render_jobs[render_id]
+    return state
 
 
 @app.get("/api/download/{filename}")

@@ -21,8 +21,8 @@ interface Layer {
 }
 
 // ── Canvas constants ─────────────────────────────────────────────────────
-const CANVAS_W = 1080
-const CANVAS_H = 1920
+const CANVAS_W = 720
+const CANVAS_H = 1280
 
 // ── Drag logic ───────────────────────────────────────────────────────────
 type DragHandle = "move" | "tl" | "tr" | "bl" | "br"
