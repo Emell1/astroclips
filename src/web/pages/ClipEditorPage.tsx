@@ -286,6 +286,48 @@ function LayerBox({
   )
 }
 
+// ── Download button (blob fetch para que funcione en iOS/móvil) ──────────
+
+function DownloadButton({ url }: { url: string }) {
+  const [downloading, setDownloading] = useState(false)
+
+  const handleDownload = async () => {
+    setDownloading(true)
+    try {
+      const res = await fetch(url)
+      const blob = await res.blob()
+      const blobUrl = URL.createObjectURL(blob)
+      const a = document.createElement("a")
+      a.href = blobUrl
+      a.download = "astroclip.mp4"
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+    } catch {
+      // fallback: abrir en nueva pestaña
+      window.open(url, "_blank")
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  return (
+    <button
+      onClick={handleDownload}
+      disabled={downloading}
+      style={{
+        display: "block", width: "100%", textAlign: "center",
+        background: downloading ? "#059669" : "#10b981", color: "#fff",
+        borderRadius: 10, padding: "16px",
+        fontWeight: 700, fontSize: 16, border: "none", cursor: "pointer"
+      }}
+    >
+      {downloading ? "Descargando..." : "⬇ Descargar MP4"}
+    </button>
+  )
+}
+
 // ── Main page ────────────────────────────────────────────────────────────
 
 export default function ClipEditorPage() {
@@ -670,12 +712,7 @@ export default function ClipEditorPage() {
         )}
 
         {downloadUrl && (
-          <a href={downloadUrl} download style={{
-            display: "block", textAlign: "center",
-            background: "#10b981", color: "#fff",
-            borderRadius: 10, padding: "16px",
-            fontWeight: 700, fontSize: 16, textDecoration: "none"
-          }}>⬇ Descargar MP4</a>
+          <DownloadButton url={downloadUrl} />
         )}
 
       </div>
