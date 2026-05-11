@@ -294,18 +294,18 @@ function DownloadButton({ url }: { url: string }) {
   const handleDownload = async () => {
     setDownloading(true)
     try {
-      const res = await fetch(url)
+      const res = await processorFetch(url.replace("/api/processor", ""))
+      if (!res.ok) throw new Error("Error al descargar")
       const blob = await res.blob()
-      const blobUrl = URL.createObjectURL(blob)
+      const blobUrl = URL.createObjectURL(new Blob([blob], { type: "video/mp4" }))
       const a = document.createElement("a")
       a.href = blobUrl
       a.download = "astroclip.mp4"
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
-      setTimeout(() => URL.revokeObjectURL(blobUrl), 5000)
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 10000)
     } catch {
-      // fallback: abrir en nueva pestaña
       window.open(url, "_blank")
     } finally {
       setDownloading(false)
@@ -518,27 +518,35 @@ export default function ClipEditorPage() {
           ))}
         </div>
 
-        {/* Crop mode toggle — only for face/diag */}
-        {activeLayer && activeLayer !== "logo" && layers[activeLayer]?.visible && (
-          <div style={{ marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }}>
-            <button
-              onClick={() => setCropMode(cropMode === activeLayer ? null : activeLayer)}
-              style={{
-                padding: "7px 14px", borderRadius: 8, cursor: "pointer", fontSize: 12,
-                border: `2px solid ${cropMode === activeLayer ? "#ef4444" : "#2a2a3a"}`,
-                background: cropMode === activeLayer ? "#ef444422" : "#1a1a26",
-                color: cropMode === activeLayer ? "#ef4444" : "#8888a0", fontWeight: 600,
-              }}
-            >
-              {cropMode === activeLayer ? "✂ Modo recorte activo" : "✂ Ajustar recorte fuente"}
-            </button>
-            {cropMode === activeLayer && (
-              <span style={{ color: "#55556a", fontSize: 11 }}>
-                Arrastra el cuadro punteado sobre el frame
-              </span>
-            )}
-          </div>
-        )}
+        {/* Crop sliders — only for face/diag */}
+        {activeLayer && activeLayer !== "logo" && layers[activeLayer]?.visible && (() => {
+          const layer = layers[activeLayer]
+          const maxW = origW
+          const maxH = origH
+          const update = (key: keyof Layer, val: number) =>
+            setLayers(prev => ({ ...prev, [activeLayer]: { ...prev[activeLayer], [key]: val } }))
+          return (
+            <div style={{ marginBottom: 12, background: "#0e0e18", border: "1px solid #2a2a3a", borderRadius: 10, padding: "12px 14px" }}>
+              <p style={{ color: "#7c3aed", fontSize: 11, fontWeight: 700, marginBottom: 10, fontFamily: "JetBrains Mono" }}>✂ RECORTE DE FUENTE</p>
+              {[
+                { label: "Pos X", key: "srcX" as keyof Layer, max: maxW - 50, val: layer.srcX },
+                { label: "Pos Y", key: "srcY" as keyof Layer, max: maxH - 50, val: layer.srcY },
+                { label: "Ancho", key: "srcW" as keyof Layer, max: maxW, val: layer.srcW },
+                { label: "Alto",  key: "srcH" as keyof Layer, max: maxH, val: layer.srcH },
+              ].map(({ label, key, max, val }) => (
+                <div key={key} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                  <span style={{ color: "#8888a0", fontSize: 11, width: 40, flexShrink: 0 }}>{label}</span>
+                  <input
+                    type="range" min={0} max={max} step={1} value={val as number}
+                    onChange={e => update(key, Number(e.target.value))}
+                    style={{ flex: 1, accentColor: "#7c3aed" }}
+                  />
+                  <span style={{ color: "#f0f0f5", fontSize: 11, width: 38, textAlign: "right", fontFamily: "JetBrains Mono" }}>{Math.round(val as number)}</span>
+                </div>
+              ))}
+            </div>
+          )
+        })()}
 
         {/* 9:16 Canvas */}
         <div ref={containerRef} style={{ background: "#12121a", border: "1px solid #2a2a3a", borderRadius: 12, overflow: "hidden", marginBottom: 16 }}>
