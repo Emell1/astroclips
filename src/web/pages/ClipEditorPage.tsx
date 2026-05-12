@@ -449,9 +449,16 @@ export default function ClipEditorPage() {
           try {
             const sr = await processorFetch(`/api/render_status/${render_id}`)
             const st = await sr.json()
+            console.log("[render_status]", JSON.stringify(st))
             if (st.status === "done") {
               clearInterval(poll)
-              setDownloadUrl(`/api/processor${st.url}`)
+              const dlUrl = st.url
+                ? `/api/processor${st.url}`
+                : st.filename
+                ? `/api/processor/api/download/${st.filename}`
+                : null
+              if (!dlUrl) { reject(new Error("Render completado pero sin URL de descarga")); return }
+              setDownloadUrl(dlUrl)
               resolve()
             } else if (st.status === "error") {
               clearInterval(poll)
