@@ -650,7 +650,19 @@ async def process_video_job(job_id: str, video_path: Path):
                    video_path=str(video_path))
 
     except Exception as e:
-        update_job(job_id, status="error", error=str(e), step=f"Error: {e}")
+        err = str(e)
+        # Mensaje legible para el usuario
+        if "Precondition check failed" in err or "HTTP Error 400" in err:
+            friendly = "YouTube bloqueó la descarga desde el servidor. Prueba con un video diferente o sube el archivo directamente."
+        elif "Private video" in err or "This video is private" in err:
+            friendly = "El video es privado y no se puede descargar."
+        elif "age" in err.lower() and "restrict" in err.lower():
+            friendly = "El video tiene restricción de edad."
+        elif "not available" in err.lower():
+            friendly = "El video no está disponible o fue eliminado."
+        else:
+            friendly = err
+        update_job(job_id, status="error", error=friendly, step=f"Error: {friendly}")
         raise
 
 
@@ -740,49 +752,63 @@ async def download_and_process(job_id: str, url: str, video_path: Path):
         update_job(job_id, size_mb=size_mb, status="uploaded", step="Video descargado. Iniciando análisis...")
         await process_video_job(job_id, video_path)
     except Exception as e:
-        update_job(job_id, status="error", error=str(e), step=f"Error: {e}")
+        err = str(e)
+        # Mensaje legible para el usuario
+        if "Precondition check failed" in err or "HTTP Error 400" in err:
+            friendly = "YouTube bloqueó la descarga desde el servidor. Prueba con un video diferente o sube el archivo directamente."
+        elif "Private video" in err or "This video is private" in err:
+            friendly = "El video es privado y no se puede descargar."
+        elif "age" in err.lower() and "restrict" in err.lower():
+            friendly = "El video tiene restricción de edad."
+        elif "not available" in err.lower():
+            friendly = "El video no está disponible o fue eliminado."
+        else:
+            friendly = err
+        update_job(job_id, status="error", error=friendly, step=f"Error: {friendly}")
 
 
 def _yt_download(job_id: str, url: str, video_path: Path):
     import subprocess as sp
 
-    # Cookies file path (optional — mount via env var)
     cookies_file = os.environ.get("YT_COOKIES_FILE", "")
+    cookies_extra = ["--cookies", cookies_file] if cookies_file and Path(cookies_file).exists() else []
 
-    base_cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "--extractor-args", "youtube:player_client=web,mweb",
-        "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "--sleep-interval", "2",
-        "-o", str(video_path),
-    ]
-
-    if cookies_file and Path(cookies_file).exists():
-        base_cmd += ["--cookies", cookies_file]
-
-    cmd = base_cmd + [url]
-    result = sp.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        # Retry with android client on failure
-        cmd2 = [
+    def run_attempt(extra_args: list, label: str):
+        cmd = [
             "yt-dlp",
             "--no-playlist",
-            "-f", "best[ext=mp4]/best",
             "--merge-output-format", "mp4",
-            "--extractor-args", "youtube:player_client=android",
             "-o", str(video_path),
-            url,
-        ]
-        if cookies_file and Path(cookies_file).exists():
-            cmd2 += ["--cookies", cookies_file]
-        result2 = sp.run(cmd2, capture_output=True, text=True)
-        if result2.returncode != 0:
-            raise RuntimeError(f"yt-dlp falló: {result2.stderr[-800:]}")
+        ] + extra_args + cookies_extra + [url]
+        print(f"[YT-DLP] intento {label}: {' '.join(cmd)}")
+        r = sp.run(cmd, capture_output=True, text=True)
+        print(f"[YT-DLP] {label} rc={r.returncode} stderr={r.stderr[-300:]}")
+        return r
+
+    # Intento 1: android_vr — no requiere PO token ni JS runtime
+    r = run_attempt([
+        "-f", "bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--extractor-args", "youtube:player_client=android_vr",
+    ], "android_vr")
+
+    # Intento 2: android genérico
+    if r.returncode != 0 or not video_path.exists():
+        r = run_attempt([
+            "-f", "best[ext=mp4]/best",
+            "--extractor-args", "youtube:player_client=android",
+        ], "android")
+
+    # Intento 3: web con user-agent real
+    if r.returncode != 0 or not video_path.exists():
+        r = run_attempt([
+            "-f", "best[ext=mp4]/best",
+            "--extractor-args", "youtube:player_client=web",
+            "--add-header", "User-Agent:Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "--sleep-interval", "3",
+        ], "web")
+
     if not video_path.exists():
-        raise RuntimeError("yt-dlp no generó el archivo de video")
+        raise RuntimeError(f"yt-dlp no pudo descargar el video. Último error: {r.stderr[-600:]}")
 
 
 render_jobs: dict = {}  # render_id -> {status, url, error}  (in-memory cache)
