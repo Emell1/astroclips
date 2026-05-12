@@ -510,18 +510,28 @@ export default function ClipEditorPage() {
         {/* Layer toggles */}
         <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
           {layerDefs.map(({ id: lid, label, color }) => (
-            <button key={lid}
-              onClick={() => {
-                setLayers(p => ({ ...p, [lid]: { ...p[lid], visible: !p[lid].visible } }))
-                setActiveLayer(lid)
-                setCropMode(null)
-              }}
-              style={{
-                padding: "8px 14px", borderRadius: 8, cursor: "pointer", fontSize: 13,
-                border: `2px solid ${layers[lid].visible ? color : "#2a2a3a"}`,
-                background: layers[lid].visible ? `${color}22` : "#1a1a26",
-                color: layers[lid].visible ? color : "#55556a", fontWeight: 600,
-              }}>{label}</button>
+            <div key={lid} style={{ display: "flex", alignItems: "center", gap: 0 }}>
+              {/* click = seleccionar capa (muestra sliders) */}
+              <button
+                onClick={() => { setActiveLayer(lid === activeLayer ? null : lid); setCropMode(null) }}
+                style={{
+                  padding: "8px 12px", borderRadius: "8px 0 0 8px", cursor: "pointer", fontSize: 13,
+                  border: `2px solid ${activeLayer === lid ? color : layers[lid].visible ? color : "#2a2a3a"}`,
+                  borderRight: "none",
+                  background: activeLayer === lid ? `${color}44` : layers[lid].visible ? `${color}22` : "#1a1a26",
+                  color: layers[lid].visible ? color : "#55556a", fontWeight: 600,
+                }}>{label}</button>
+              {/* botón ojo = toggle visibilidad */}
+              <button
+                onClick={() => setLayers(p => ({ ...p, [lid]: { ...p[lid], visible: !p[lid].visible } }))}
+                title={layers[lid].visible ? "Ocultar capa" : "Mostrar capa"}
+                style={{
+                  padding: "8px 8px", borderRadius: "0 8px 8px 0", cursor: "pointer", fontSize: 12,
+                  border: `2px solid ${layers[lid].visible ? color : "#2a2a3a"}`,
+                  background: layers[lid].visible ? `${color}22` : "#1a1a26",
+                  color: layers[lid].visible ? color : "#55556a",
+                }}>{layers[lid].visible ? "👁" : "🙈"}</button>
+            </div>
           ))}
         </div>
 
