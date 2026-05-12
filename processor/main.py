@@ -889,14 +889,16 @@ async def render_clip_endpoint(config: RenderConfig, background_tasks: Backgroun
             raise HTTPException(400, "Clip index out of range")
 
     render_id = f"{config.job_id}_clip{config.clip_index}"
-    render_jobs[render_id] = {"status": "rendering"}
+    set_render_state(render_id, {"status": "rendering"})  # persist immediately
     background_tasks.add_task(do_render_background, render_id, config, job)
+    print(f"[RENDER] queued {render_id}")
     return {"render_id": render_id, "status": "rendering"}
 
 
 @app.get("/api/render_status/{render_id}")
 async def render_status(render_id: str):
     state = load_render_job(render_id)
+    print(f"[STATUS] {render_id} → {state}")
     if state is None:
         raise HTTPException(404, "Render not found")
     return state
