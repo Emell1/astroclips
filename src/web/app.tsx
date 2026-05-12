@@ -5,7 +5,8 @@ import LoginPage from "./pages/LoginPage";
 import SetupPage from "./pages/SetupPage";
 import UploadPage from "./pages/UploadPage";
 import JobPage from "./pages/JobPage";
-import ClipEditorPage from "./pages/ClipEditorPage";
+import ClipEditorPage from "./pages/ClipEditorPage"
+import AdminPage from "./pages/AdminPage";
 
 function ProtectedRoute({ component: Component }: { component: React.ComponentType }) {
   const { user, loading } = useAuth();
@@ -73,6 +74,7 @@ export default function App() {
         <Route path="/" component={() => <ProtectedRoute component={UploadPage} />} />
         <Route path="/job/:id" component={() => <ProtectedRoute component={JobPage} />} />
         <Route path="/job/:id/clip/:index" component={() => <ProtectedRoute component={ClipEditorPage} />} />
+        <Route path="/admin" component={() => <ProtectedRoute component={AdminPage} />} />
       </Switch>
     </div>
   );

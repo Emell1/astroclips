@@ -150,6 +150,16 @@ app.get("/auth/users", requireAuth, async (c) => {
   return c.json(allUsers);
 });
 
+// Admin: delete user
+app.delete("/auth/users/:id", requireAuth, async (c) => {
+  if (c.get("userRole") !== "admin") return c.json({ error: "Forbidden" }, 403);
+  const targetId = c.req.param("id");
+  if (targetId === c.get("userId")) return c.json({ error: "No puedes eliminarte a ti mismo" }, 400);
+  const db = drizzle(c.env.DB);
+  await db.delete(users).where(eq(users.id, targetId));
+  return c.json({ ok: true });
+});
+
 // ── Processor Proxy (authenticated) ───────────────────────────────────────
 // Forward all /api/processor/* calls to Railway Python server
 
